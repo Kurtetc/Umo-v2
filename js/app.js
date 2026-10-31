@@ -43,6 +43,10 @@ async function loadCatalog() {
   let rows = null;
   try { const r = await fetch('api/gpus.php', {cache:'no-store'}); if (r.ok) { const j = await r.json(); if (Array.isArray(j)) rows = j; } } catch(e) {}
   if (!rows) {
+    // Резервный источник: сначала готовый JSON-экспорт базы, затем — парсинг CSV.
+    try { const rj = await fetch('gpus.json', {cache:'no-store'}); if (rj.ok) { const j = await rj.json(); if (Array.isArray(j) && j.length) rows = j; } } catch(e) {}
+  }
+  if (!rows) {
     try {
       const r = await fetch('bd.csv');
       if (!r.ok) throw new Error('bd.csv недоступен: HTTP ' + r.status);
