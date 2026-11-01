@@ -106,6 +106,7 @@ function shortMark(name){
 }
 function buildRows(rows) {
   const frag = document.createDocumentFragment();
+  let tensorColumnHasData = false; // станет true, если хоть у одной карты есть тензорные/RT-ядра
   rows.forEach(item => {
     const full = (item['name']||'').trim(); if (!full) return;
     const perfName = (item['Videocard Name_perf']||full).trim();
@@ -124,6 +125,8 @@ function buildRows(rows) {
     const tdpv = numOf(item['tdp']), psuv = numOf(item['suggested_psu']);
     const power = (tdpv!==null?fmtInt(tdpv)+' Вт':'—') + ' / ' + (psuv!==null?fmtInt(psuv)+' Вт':'—');
     const tc = numOf(item['tensor_cores']), rc = numOf(item['rt_cores']);
+    const hasTensor = tc !== null || rc !== null; // для авто-показа колонки «Тензорные ядра / RT-ядра»
+    if (hasTensor) tensorColumnHasData = true;
     const tens = (tc!==null?fmtInt(tc):'—') + ' / ' + (rc!==null?fmtInt(rc):'—');
     const proc = (item['proc_process_size']||'').trim(); const nuc = (item['nucleus']||'').trim();
     const tech = (proc||'—') + ' / ' + (nuc||'—');
@@ -142,12 +145,17 @@ function buildRows(rows) {
       + '<td>' + escapeHtml(memFull) + '</td>'
       + '<td>' + escapeHtml(bus) + '</td>'
       + '<td>' + escapeHtml(power) + '</td>'
-      + '<td>' + tens + '</td>'
-      + '<td>' + escapeHtml((bkey==='NVIDIA'?'NVIDIA':bkey==='AMD'?'AMD':bkey==='INTEL'?'Intel':bkey) + ' / ' + (nuc||'—')) + '</td>'
+      + '<td class="col-tensor">' + tens + '</td>'
       + '<td>' + escapeHtml(io) + '</td>';
     frag.appendChild(tr);
   });
   tableBody.appendChild(frag);
+  // Колонка «Тензорные ядра / RT-ядра»: скрыта, пока ни у одной карты нет значений;
+  // если хотя бы у одной есть — показываем её для всей таблицы.
+  const tensorHead = table.tHead.querySelector('.col-tensor');
+  if (tensorHead) {
+    if (tensorColumnHasData) tensorHead.removeAttribute('hidden'); else tensorHead.setAttribute('hidden','');
+  }
   catalogRows = [...tableBody.querySelectorAll('tr')];
   applyHitsToRows();
   catalogResolve();
@@ -156,7 +164,8 @@ function decC(s){ const n = numOf(s); if (n===null) return '—'; return (Math.r
 function escapeHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 let selectedModel = '';
 // Каталог хранится в строках таблицы, но до выбора модели они не участвуют в сравнении.
-catalogRows.forEach(tr => { tr.dataset.selected = 'false'; tr.style.display = 'none'; }); // до загрузки пусто, основной проход — в initCatalog()
+// Основной проход (после загрузки данных из БД) — ниже, catalogReady.then(...).
+// Строка выше с «до загрузки пусто» оставляется только как страховка на случай, если строки появятся до готовности каталога.
 function rowsForScope(scope) {
   return catalogRows.filter(tr => {
     if (scope === 'all') return true;
@@ -352,12 +361,20 @@ document.getElementById('drawTool').addEventListener('click',()=>setDrawingMode(
 window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'&&!e.target.closest('input,textarea,[contenteditable="true"]')){e.preventDefault();e.stopPropagation();undoDrawing();}},true);
 window.addEventListener('resize',resizeDrawingCanvas);resizeDrawingCanvas();
 try{const saved=localStorage.getItem(drawingStorageKey);if(saved){const img=new Image();img.onload=()=>drawingCtx.drawImage(img,0,0,drawingCanvas.clientWidth,drawingCanvas.clientHeight);img.src=saved;}}catch(e){}
-// Restore favorite flags and make the remove/star controls available on selected rows.
-catalogReady.then(() => { catalogRows.forEach(tr => {
-  const name = gpuName(tr);
-  tr.dataset.favorite = favoriteNames.has(name) ? 'true' : 'false';
-  renderRemoveCell(tr);
-}); });
+// Основной проход после загрузки каталога из БД:
+// 1) ВСЕ строки скрыты и не выбраны — на пустом сайте карты не должны выглядеть «выбранными»;
+//    карта появляется в таблице только когда пользователь добавил её в сравнение (addGpu).
+//    Исключение — ссылки «поделиться» с параметром ?gpus=... (востановление ниже).
+// 2) Восстанавливаем флаги избранного из localStorage.
+catalogReady.then(() => {
+  catalogRows.forEach(tr => {
+    tr.dataset.selected = 'false';
+    tr.style.display = 'none';
+    const name = gpuName(tr);
+    tr.dataset.favorite = favoriteNames.has(name) ? 'true' : 'false';
+    renderRemoveCell(tr);
+  });
+});
 // Modal helpers: these are front-end placeholders until an account/contact backend is connected.
 const modalBackdrop = document.getElementById('modalBackdrop'), modalTitle = document.getElementById('modalTitle'), modalBody = document.getElementById('modalBody'), modalSubmit = document.getElementById('modalSubmit');
 let modalAction = null;
@@ -532,7 +549,7 @@ document.getElementById('siteFeedback').addEventListener('click', () => openModa
   const msg=document.getElementById('feedbackText')?.value||''; const email=document.getElementById('feedbackEmail')?.value||'';
   window.location.href='mailto:?subject='+encodeURIComponent('Отзыв о GPU Compare')+'&body='+encodeURIComponent(msg+(email?'\n\nEmail для ответа: '+email:'')); closeModal();
 }));
-// Restore selected cards from a shared URL.
+// Restore selected cards from a shared URL (?gpus=... — выбор пользователя, не «все карты»).
 catalogReady.then(() => { try { const shared = new URL(window.location.href).searchParams.get('gpus'); if(shared) { shared.split('|').forEach(n => { const tr=catalogRows.find(t => gpuName(t)===n); if(tr) addGpu(tr); }); } } catch(e) {} });
 
 
@@ -679,7 +696,11 @@ var tReady=false;
 const gridT=document.getElementById('gridT'), tPanel=document.querySelector('.table-panel'), orientBtn=document.getElementById('orientToggle'), ORIENT_KEY='gpuCompareOrientV1';
 function renderT(){
   const rows=[...table.tBodies[0].rows].filter(r=>r.dataset.selected==='true');
-  const labels=[...table.tHead.rows[0].cells].slice(2), esc=escapeRateHtml;
+  // Список видимых колонок строится по реальным <th>: скрытые (hidden, напр. «Тензорные ядра / RT-ядра») пропускаются,
+  // а индексы ячеек (<td>) остаются корректными за счёт map+filter ниже.
+  const thAll=[...table.tHead.rows[0].cells];
+  const labels=thAll.map((th,idx)=>({th,idx})).filter(o=>o.idx>=2 && !o.th.hasAttribute('hidden'));
+  const esc=escapeRateHtml;
   const max=rows.reduce((m,r)=>Math.max(m,+r.dataset.perf||0),0);
   let h='<div class="tg-row" role="row"><div class="tg-corner" role="columnheader"></div>';
   if(!rows.length)h+='<div class="tg-head t-empty" role="columnheader">Выберите видеокарты в полях выше</div>';
@@ -692,10 +713,11 @@ function renderT(){
      +'<div class="mini-perf"><span class="mini-track"><i class="mini-fill" style="width:'+pct+'%"></i></span><b>'+fmtPct(pct)+'</b></div></div>';
   });
   h+='</div>';
-  labels.forEach((th,i)=>{
+  labels.forEach((o,i)=>{
+    const th=o.th;
     h+='<div class="tg-row'+(i%2?' alt':'')+'" role="row"><div class="tg-label'+(th.classList.contains('nc')?' nc':'')+'" role="rowheader"'+(th.title?' title="'+esc(th.title)+'"':'')+'>'+th.innerHTML+'</div>';
     if(!rows.length)h+='<div class="tg-cell" role="cell"></div>';
-    rows.forEach(r=>{h+='<div class="tg-cell" role="cell">'+r.cells[i+2].textContent.split(' / ').map(x=>esc(x).replace(/ /g,'\u00a0')).join(' / ')+'</div>';});
+    rows.forEach(r=>{const cell=r.cells[o.idx];if(!cell)return;h+='<div class="tg-cell" role="cell">'+cell.textContent.split(' / ').map(x=>esc(x).replace(/ /g,'\u00a0')).join(' / ')+'</div>';});
     h+='</div>';
   });
   gridT.style.setProperty('--n',Math.max(rows.length,1));
