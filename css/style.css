@@ -404,3 +404,6 @@ body[data-theme="light"] input,body.theme-light input,body[data-theme="light"] t
 }
 @media(max-width:520px){.cookie-bar.show{flex-direction:column;align-items:stretch;gap:8px;padding:10px 12px;font-size:11.5px;line-height:1.4}.cookie-actions{justify-content:flex-end}.cookie-actions .btn{padding:7px 12px;font-size:11px}}
 @media(max-width:359px){html:not(.off-brandname) .bt-sub{display:none}}
+
+/* Колонка «Тензорные/RT-ядра»: скрыта, пока в данных нет значений (управляется из js/app.js) */
+.col-tensor[hidden]{display:none}

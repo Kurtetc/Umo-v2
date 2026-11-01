@@ -152,10 +152,12 @@ function buildRows(rows) {
   tableBody.appendChild(frag);
   // Колонка «Тензорные ядра / RT-ядра»: скрыта, пока ни у одной карты нет значений;
   // если хотя бы у одной есть — показываем её для всей таблицы.
-  const tensorHead = table.tHead.querySelector('.col-tensor');
-  if (tensorHead) {
-    if (tensorColumnHasData) tensorHead.removeAttribute('hidden'); else tensorHead.setAttribute('hidden','');
-  }
+  // Скрываем/показываем ВСЮ колонку (заголовок + ячейки всех строк).
+  // Атрибут hidden на <th> скрывает только заголовок, поэтому применяем к каждому элементу колонки.
+  const tensorOn = tensorColumnHasData;
+  table.querySelectorAll('.col-tensor').forEach(el => {
+    if (tensorOn) el.removeAttribute('hidden'); else el.setAttribute('hidden','');
+  });
   catalogRows = [...tableBody.querySelectorAll('tr')];
   applyHitsToRows();
   catalogResolve();
