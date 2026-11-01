@@ -31,9 +31,8 @@ viewport.addEventListener('pointerleave',()=>{if(raf)cancelAnimationFrame(raf)})
 
 
 const filterBoxes = [...document.querySelectorAll('.gpu-filter')];
-// Каталог пуст по умолчанию: строки видеокарт подгружаются из базы данных.
-// Основной источник — MySQL через api/gpus.php. Если PHP/БД недоступны (чистый HTML-режим на хостинге),
-// используется резервная копия базы — файл bd.csv рядом с index.html.
+// Каталог пуст по умолчанию: строки видеокарт подгружаются ТОЛЬКО из базы данных MySQL
+// через api/gpus.php. Резервных источников (JSON/CSV) больше нет.
 const tableBody = table.tBodies[0];
 let catalogRows = [];
 let catalogResolve, catalogReject; const catalogPromise = new Promise((res, rej) => { catalogResolve = res; catalogReject = rej; });
@@ -41,40 +40,16 @@ const catalogReady = loadCatalog().then(() => catalogPromise);
 catalogReady.catch(e => { console.error('Не удалось загрузить каталог видеокарт', e); });
 async function loadCatalog() {
   let rows = null;
-  try { const r = await fetch('api/gpus.php', {cache:'no-store'}); if (r.ok) { const j = await r.json(); if (Array.isArray(j)) rows = j; } } catch(e) {}
-  if (!rows) {
-    // Резервный источник: сначала готовый JSON-экспорт базы, затем — парсинг CSV.
-    try { const rj = await fetch('gpus.json', {cache:'no-store'}); if (rj.ok) { const j = await rj.json(); if (Array.isArray(j) && j.length) rows = j; } } catch(e) {}
-  }
-  if (!rows) {
-    try {
-      const r = await fetch('bd.csv');
-      if (!r.ok) throw new Error('bd.csv недоступен: HTTP ' + r.status);
-      rows = parseCsv(await r.text());
-    } catch(e) { catalogReject(e); return; }
-  }
-  if (!rows.length) { catalogReject(new Error('База видеокарт пуста')); return; }
+  try {
+    const r = await fetch('api/gpus.php', {cache:'no-store'});
+    if (!r.ok) throw new Error('api/gpus.php недоступен: HTTP ' + r.status + '. Проверьте, что сайт запущен через PHP (OpenServer/Beget) и база данных импортирована.');
+    const j = await r.json();
+    if (Array.isArray(j)) rows = j;
+    else if (j && j.error) throw new Error('Ошибка БД: ' + j.error + ' — ' + (j.detail || ''));
+    else throw new Error('Некорректный ответ от api/gpus.php');
+  } catch(e) { catalogReject(e); return; }
+  if (!rows.length) { catalogReject(new Error('Таблица gpus в базе данных пуста. Импортируйте database/gpus_import.sql через phpMyAdmin.')); return; }
   buildRows(rows);
-}
-function parseCsv(text) {
-  const clean = text.replace(/^﻿/, '');
-  const lines = clean.split(/\r?\n/).filter(l => l.trim());
-  const head = splitCsvLine(lines[0]);
-  const idx = name => head.findIndex(h => h.trim().toLowerCase() === name.toLowerCase());
-  const keys = ['name','Videocard Name_perf','Passmark G3D Mark','vendor','arch_name','card_release_date','proc_process_size','cores','tensor_cores','rt_cores','base_clock','boost_clock','ram','ram_type','bus_width','bus_interface','ram_bandwidth','tdp','suggested_psu','power_connectors','Memory frequency','nucleus','Rasterization blocks','pixelRate','Texture blocks','textureRate','directX'];
-  const ix = {}; keys.forEach(k => ix[k] = head.findIndex(h => h.trim().toLowerCase() === k.toLowerCase()));
-  return lines.slice(1).map(l => { const c = splitCsvLine(l); const o = {}; keys.forEach(k => o[k] = c[ix[k]] || ''); return o; });
-}
-function splitCsvLine(line) {
-  const out = []; let cur = '', q = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (q) { if (ch === '"') { if (line[i+1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
-    else if (ch === '"') q = true;
-    else if (ch === ';') { out.push(cur); cur = ''; }
-    else cur += ch;
-  }
-  out.push(cur); return out;
 }
 function gpuDisplayName(raw) {
   // «NVIDIA GeForce RTX 5090» -> оставляем как есть; короткие имена из колонок name/perf уже содержат бренд
