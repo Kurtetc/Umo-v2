@@ -1,3 +1,16 @@
+// ==== Конфигурация страницы: один app.js работает и для видеокарт (index.html), и для процессоров (cpu.html).
+// На страницах задан window.PAGE_TYPE ('gpu' или 'cpu'); если не задан — определяем по имени файла.
+var PAGE = (window.PAGE_TYPE === 'cpu' || /cpu\.html/i.test(location.pathname)) ? {
+  kind:'cpu', api:'api/cpus.php', hitApi:'api/cpu_hit.php', hitsKey:'cpuCompareHitsV1',
+  favKey:'cpuCompareFavoritesV1', drawKey:'cpuCompareDrawingNoteV1', orientKey:'cpuCompareOrientV1',
+  themeKey:'cpuCompareThemeV1', noun:'процессор', nounGen:'процессора', nounPl:'процессоров', nounAccPl:'процессоры',
+  retroYear:2010, shareParam:'cpus', perfHeader:'Производительность'
+} : {
+  kind:'gpu', api:'api/gpus.php', hitApi:'api/hit.php', hitsKey:'gpuCompareHitsV1',
+  favKey:'gpuCompareFavoritesV1', drawKey:'gpuCompareDrawingNoteV1', orientKey:'gpuCompareOrientV1',
+  themeKey:'gpuCompareThemeV1', noun:'видеокарта', nounGen:'видеокарты', nounPl:'видеокарт', nounAccPl:'видеокарты',
+  retroYear:2015, shareParam:'gpus', perfHeader:null
+};
 const viewport=document.getElementById('viewport'), table=document.getElementById('gpuTable');
 let activeFilter='all', hoverMode=true, raf=0;
 // Position-based scroll: cursor at the viewport's center = table's center;
@@ -41,15 +54,42 @@ catalogReady.catch(e => { console.error('Не удалось загрузить 
 async function loadCatalog() {
   let rows = null;
   try {
-    const r = await fetch('api/gpus.php', {cache:'no-store'});
-    if (!r.ok) throw new Error('api/gpus.php недоступен: HTTP ' + r.status + '. Проверьте, что сайт запущен через PHP (OpenServer/Beget) и база данных импортирована.');
+    const r = await fetch(PAGE.api, {cache:'no-store'});
+    if (!r.ok) throw new Error(PAGE.api + ' недоступен: HTTP ' + r.status + '. Проверьте, что сайт запущен через PHP (OpenServer/Beget) и база данных импортирована.');
     const j = await r.json();
     if (Array.isArray(j)) rows = j;
     else if (j && j.error) throw new Error('Ошибка БД: ' + j.error + ' — ' + (j.detail || ''));
-    else throw new Error('Некорректный ответ от api/gpus.php');
+    else throw new Error('Некорректный ответ от ' + PAGE.api);
   } catch(e) { catalogReject(e); return; }
-  if (!rows.length) { catalogReject(new Error('Таблица gpus в базе данных пуста. Импортируйте database/gpus_import.sql через phpMyAdmin.')); return; }
-  buildRows(rows);
+  if (!rows.length) { catalogReject(new Error('Таблица ' + (PAGE.kind==='cpu'?'cpus':'gpus') + ' в базе данных пуста. Импортируйте соответствующий SQL из database/ через phpMyAdmin.')); return; }
+  if (PAGE.kind === 'cpu') buildCpuRows(rows); else buildRows(rows);
+}
+function plural(n, forms) { // forms: [1, 2-4, 5+] ('видеокарта','карты','карт')
+  n = Math.abs(n) % 100; const n1 = n % 10;
+  if (n > 10 && n < 20) return forms[2];
+  if (n1 > 1 && n1 < 5) return forms[1];
+  if (n1 === 1) return forms[0];
+  return forms[2];
+}
+// Синонимы бренда для поиска: «intel i7» -> «core i7», «амд райзен» -> «ryzen» и т.п.
+const BRAND_SYNONYMS = [['intel','интел','кор','core'],['amd','амд','райзен','ryzen','атлон','athlon','эпик','epyc','радеон'],
+  ['nvidia','энвидиа','нвидиа','гефорс','geforce'],['apple','аппл']];
+function expandQuery(q) {
+  q = q.toLowerCase();
+  const words = q.split(/\s+/).filter(Boolean);
+  const out = [];
+  for (const w of words) {
+    out.push(w);
+    if (w === 'i3' || w === 'i5' || w === 'i7' || w === 'i9') out.push('core ' + w);
+    if (BRAND_SYNONYMS.some(g => g.includes(w))) continue; // само название бренда уже матчится по brand
+  }
+  return out;
+}
+function matchName(tr, q) {
+  const name = tr.querySelector('.brand-name').textContent.toLowerCase();
+  const brand = (tr.dataset.brand || '').toLowerCase();
+  const qs = expandQuery(q);
+  return qs.every(w => name.includes(w) || brand.includes(w) || tr.dataset.year.includes(w));
 }
 function gpuDisplayName(raw) {
   // «NVIDIA GeForce RTX 5090» -> оставляем как есть; короткие имена из колонок name/perf уже содержат бренд
@@ -161,6 +201,104 @@ function buildRows(rows) {
   applyHitsToRows();
   catalogResolve();
 }
+// ---- построение строк таблицы процессоров (данные из таблицы cpus / api/cpus.php) ----
+const CPU_MON=['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
+function cpuRelCell(item){ // релиз как у видеокарт: «мар 2022»; если месяца нет — просто год
+  const y=+item.rel_year||0, mth=+item.rel_month||0;
+  if(!y) return '—';
+  return (mth?CPU_MON[mth-1]+' ':'')+y;
+}
+function cpuFreqCell(base,boost){ // частоты в ГГц: «2,5 - 5,4 ГГц» (подпись база/буст — маленьким шрифтом в заголовке)
+  const b=(base===null||base===undefined)?null:+base, u=(boost===null||boost===undefined)?null:+boost;
+  const g=v=>String(v%1?v.toFixed(2).replace(/0$/,'').replace('.',','):v);
+  if(b===null&&u===null) return '—';
+  if(b!==null&&u!==null&&Math.abs(u-b)>0.001) return g(b)+' - '+g(u)+' ГГц';
+  return g(u!==null?u:b)+' ГГц';
+}
+function cpuCachePart(s){ // «64 Кб (на ядро)» -> «64 Кб», «N/A»/пусто -> ''
+  s=String(s||'').replace(/\u00a0/g,' ').trim();
+  if(!s||/^n\/?a$/i.test(s)||s==='—') return '';
+  return s.replace(/\s*\((на ядро|всего)\).*$/i,'').trim();
+}
+function cpuCacheCell(l1,l2,l3){
+  const parts=[l1,l2,l3].map(cpuCachePart);
+  if(parts.every(p=>!p)) return '—';
+  return parts.map(p=>p||'—').join(' / ');
+}
+function cpuShortMark(name,brand){
+  name=String(name||'').trim();
+  let m;
+  if((m=name.match(/^Ryzen\s*Threadripper\s*(PRO)?\s*/i))) return m[1]?'RTP':'TRP';
+  if((m=name.match(/^Threadripper\s*(PRO)?\s*/i))) return m[1]?'RTP':'TRP';
+  if((m=name.match(/^EPYC[\s-]*(\w*)/i))) return 'EPYC';
+  if((m=name.match(/^Ryzen\s*(\d)/i))) return 'R'+m[1];
+  if((m=name.match(/^Athlon\s*(X)?(\d\w*)/i))) return 'ATH';
+  if((m=name.match(/^Sempron/i))) return 'SEM';
+  if((m=name.match(/^Phenom/i))) return 'PHN';
+  if((m=name.match(/^Opteron/i))) return 'OPT';
+  if((m=name.match(/^Turion/i))) return 'TUR';
+  if((m=name.match(/^A\(?\s*(\d{3})/i))) return 'APU'+m[1];
+  if((m=name.match(/^Core\s*(Ultra)\s*(X\d|\d+)/i))) return 'CUX';
+  if((m=name.match(/^Core\s*i(\d)(\w*)/i))) return 'I'+m[1];
+  if((m=name.match(/^Core\s*(\w+)\s*(\w+)/i))) return (m[1][0]+m[2]).toUpperCase().slice(0,4);
+  if((m=name.match(/^Pentium\s*(D|Dual|G|4)?/i))) return 'PEN';
+  if((m=name.match(/^Celeron/i))) return 'CEL';
+  if((m=name.match(/^Xeon\s*(W|D)?/i))) return m[1]?'XN'+m[1]:'Xeon'.toUpperCase();
+  if((m=name.match(/^Itanium/i))) return 'ITA';
+  if((m=name.match(/^Atom/i))) return 'ATOM';
+  if((m=name.match(/^Apple\s*(M\d)/i))) return m[1].toUpperCase();
+  if((m=name.match(/^Snapdragon\s*(\w+)/i))) return 'SD';
+  if((m=name.match(/^GeForce\s*(\w+)/i))) return 'GF';
+  if((m=name.match(/^Tegra\s*(\w+)/i))) return 'TEG';
+  if((m=name.match(/^K\d+\s*(\w+)/i))) return 'ARM';
+  const w=name.match(/[A-Za-z]+|\d+/g);
+  return (w?w[0]:(brand||'CPU')).toUpperCase().slice(0,4);
+}
+function buildCpuRows(rows){
+  const frag=document.createDocumentFragment();
+  rows.forEach(item=>{
+    const full=(item['name']||'').trim(); if(!full) return;
+    const braw=(item['brand']||'').toUpperCase();
+    const bkey=braw.includes('AMD')?'AMD':braw.includes('INT')?'INTEL':braw.includes('NVD')?'NVIDIA':'OTHER';
+    const year=+item['rel_year']||'';
+    const perf=+item['perf']||0;
+    const cores=+item['cores']||null, threads=+item['threads']||null;
+    const ct=(cores!==null?fmtInt(cores):'—')+' / '+(threads!==null?fmtInt(threads):'—');
+    const socket=(item['socket']||'').trim(), lith=(item['lithography']||'').trim();
+    const sockLith=(socket||'—')+' / '+(lith||'—');
+    const temp=+item['max_temp']||null, tdp=+item['tdp']||null;
+    const power=(temp!==null?fmtInt(temp)+' °C':'—')+' / '+(tdp!==null?fmtInt(tdp)+' Вт':'—');
+    const memtype=(item['mem_type']||'').trim()||'—';
+    let igpu=(item['igpu']||'').trim(); if(!igpu||/^n\/?a$/i.test(igpu)) igpu='—';
+    const prec=(item['pci_rev']||'').trim().replace(/,/g,'.'), plan=(item['pci_lanes']||'').trim();
+    const revPart=prec?('PCIe '+prec):'';
+    const lanePart=plan?(plan+' линий'):'';
+    const pciCell=[revPart,lanePart].filter(Boolean).join(' / ')||'—';
+    const arch=(item['arch_name']||'').trim(), typ=(item['cpu_type']||'').trim();
+    const tr=document.createElement('tr');
+    tr.dataset.brand=bkey; tr.dataset.year=year; tr.dataset.perf=String(perf);
+    const mark=cpuShortMark(full,bkey);
+    tr.innerHTML='<td class="remove-cell"></td>'
+      + '<td><div class="gpu-name"><span class="gpu-mark '+bkey.toLowerCase()+'-mark">'+escapeHtml(mark)+'</span><span><span class="brand-name '+bkey.toLowerCase()+'">'+escapeHtml(full)+'</span><small>'+escapeHtml([bkey!=='OTHER'?bkey:'',typ,arch].filter(Boolean).join(' · '))+'</small></span></div></td>'
+      + '<td>'+escapeHtml(cpuRelCell(item))+'</td>'
+      + '<td>'+escapeHtml(sockLith)+'</td>'
+      + '<td>'+escapeHtml(typ||'—')+'</td>'
+      + '<td class="nc">'+(item['perf']!=null?decC(item['perf']):'—')+'</td>'
+      + '<td>'+ct+'</td>'
+      + '<td>'+escapeHtml(cpuFreqCell(item['base_clock'],item['boost_clock']))+'</td>'
+      + '<td>'+escapeHtml(cpuCacheCell(item['cache_l1'],item['cache_l2'],item['cache_l3']))+'</td>'
+      + '<td>'+escapeHtml(power)+'</td>'
+      + '<td>'+escapeHtml(memtype)+'</td>'
+      + '<td>'+escapeHtml(igpu)+'</td>'
+      + '<td>'+escapeHtml(pciCell)+'</td>'
+      + '<td>'+escapeHtml(arch||'—')+'</td>';
+    frag.appendChild(tr);
+  });
+  tableBody.appendChild(frag);
+  catalogRows=[...tableBody.querySelectorAll('tr')];
+  applyHitsToRows();
+  catalogResolve();
+}
 function decC(s){ const n = numOf(s); if (n===null) return '—'; return (Math.round(n*10)/10).toString().replace('.', ','); }
 function escapeHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 let selectedModel = '';
@@ -171,7 +309,7 @@ function rowsForScope(scope) {
   return catalogRows.filter(tr => {
     if (scope === 'all') return true;
     if (scope === 'favorites') return tr.dataset.favorite === 'true';
-    if (scope === 'retro') return tr.dataset.year !== '' && Number(tr.dataset.year) < 2015;
+    if (scope === 'retro') return tr.dataset.year !== '' && Number(tr.dataset.year) < PAGE.retroYear;
     return tr.dataset.brand === scope;
   });
 }
@@ -181,7 +319,7 @@ function closeFilterMenus(except) {
 function updateCounts() {
   const selected = catalogRows.filter(tr => tr.dataset.selected === 'true');
   const shown = document.getElementById('shown');
-  if (shown) shown.textContent = 'В сравнении ' + selected.length + ' видеокарт';
+  if (shown) shown.textContent = 'В сравнении ' + selected.length + ' ' + plural(selected.length, [PAGE.noun, PAGE.nounPl.slice(0,-1)+'ы', PAGE.nounPl]);
   updateTensorColumn();
   if (perfReady) renderPerf();
   if (tReady) renderT();
@@ -198,7 +336,7 @@ function updateTensorColumn() {
     if (on) el.removeAttribute('hidden'); else el.setAttribute('hidden','');
   });
 }
-const favoriteStorageKey = 'gpuCompareFavoritesV1';
+const favoriteStorageKey = PAGE.favKey;
 let favoriteNames = new Set();
 try { favoriteNames = new Set(JSON.parse(localStorage.getItem(favoriteStorageKey) || '[]')); } catch(e) {}
 function persistFavorites() { try { localStorage.setItem(favoriteStorageKey, JSON.stringify([...favoriteNames])); } catch(e) {} }
@@ -209,7 +347,7 @@ function renderRemoveCell(tr) {
   if (tr.dataset.selected === 'true') {
     const remove = document.createElement('button');
     remove.type = 'button'; remove.className = 'remove-gpu'; remove.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 10v6M14 10v6"/></svg>';
-    remove.title = 'Убрать видеокарту из сравнения';
+    remove.title = 'Убрать ' + PAGE.noun + ' из сравнения';
     remove.setAttribute('aria-label', 'Убрать ' + gpuName(tr) + ' из сравнения');
     remove.addEventListener('click', () => { tr.dataset.selected = 'false'; tr.style.display = 'none'; renderRemoveCell(tr); updateCounts(); });
     cell.appendChild(remove);
@@ -246,7 +384,7 @@ function addGpu(tr) {
 
 // Внутренний счётчик popularity: сколько раз карту выбрали в сравнение.
 // Хранится в localStorage браузера и (при наличии backend) синхронизируется с базой данных через api/hit.php.
-const GPU_HITS_KEY = 'gpuCompareHitsV1';
+const GPU_HITS_KEY = PAGE.hitsKey;
 function loadLocalHits(){ try { return JSON.parse(localStorage.getItem(GPU_HITS_KEY)) || {}; } catch(e){ return {}; } }
 function saveLocalHits(h){ try { localStorage.setItem(GPU_HITS_KEY, JSON.stringify(h)); } catch(e){} }
 function applyHitsToRows(){ const h = loadLocalHits(); catalogRows.forEach(tr => { const n = (tr.querySelector('.brand-name')?.textContent || '').trim(); if (h[n]) tr.dataset.hits = String(h[n]); }); }
@@ -255,22 +393,19 @@ function registerGpuHit(tr){
   if (!name) return;
   const h = loadLocalHits(); h[name] = (h[name] || 0) + 1; saveLocalHits(h);
   tr.dataset.hits = String(h[name]);
-  fetch('api/hit.php', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name}) }).catch(()=>{});
+  fetch(PAGE.hitApi, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name}) }).catch(()=>{});
 }
 
 function updateFilterOptions(box) {
   const input = box.querySelector('input');
   const options = box.querySelector('.filter-options');
   const q = input.value.trim().toLowerCase();
-  const matches = rowsForScope(box.dataset.scope).filter(tr => {
-    const name = tr.querySelector('.brand-name').textContent.toLowerCase();
-    return name.includes(q) || tr.dataset.year.includes(q) || tr.dataset.brand.toLowerCase().includes(q);
-  });
+  const matches = rowsForScope(box.dataset.scope).filter(tr => matchName(tr, q));
   options.innerHTML = '';
   if (!matches.length) {
     const empty = document.createElement('div');
     empty.className = 'filter-option';
-    empty.textContent = box.dataset.scope === 'favorites' ? 'Пока нет избранных видеокарт' : 'Ничего не найдено';
+    empty.textContent = box.dataset.scope === 'favorites' ? 'Пока нет избранных ' + PAGE.nounPl : 'Ничего не найдено';
     empty.style.cursor = 'default';
     options.appendChild(empty);
     return;
@@ -334,7 +469,7 @@ const drawingCard = document.querySelector('.drawing-card');
 const drawingPaper = document.querySelector('.drawing-paper-wrap');
 let drawing = false, erasing = false, lastPoint = null, drawingMode = 'draw';
 let drawingHistory = [];
-const drawingStorageKey = 'gpuCompareDrawingNoteV1';
+const drawingStorageKey = PAGE.drawKey;
 function saveDrawingSnapshot(){try{drawingHistory.push(drawingCtx.getImageData(0,0,drawingCanvas.width,drawingCanvas.height));if(drawingHistory.length>50)drawingHistory.shift();}catch(e){}}
 function restoreDrawingSnapshot(data){if(!data)return;drawingCtx.save();drawingCtx.setTransform(1,0,0,1,0,0);drawingCtx.clearRect(0,0,drawingCanvas.width,drawingCanvas.height);drawingCtx.putImageData(data,0,0);drawingCtx.restore();}
 function undoDrawing(){if(!drawingHistory.length)return;restoreDrawingSnapshot(drawingHistory.pop());}
@@ -380,7 +515,22 @@ try{const saved=localStorage.getItem(drawingStorageKey);if(saved){const img=new 
 //    карта появляется в таблице только когда пользователь добавил её в сравнение (addGpu).
 //    Исключение — ссылки «поделиться» с параметром ?gpus=... (востановление ниже).
 // 2) Восстанавливаем флаги избранного из localStorage.
+if (PAGE.kind === 'cpu') {
+  // Подпись под столбцом «Частота»: база – буст (мелким шрифтом, как у видеокарт в «Частота ядра»)
+  const thFreq=[...table.tHead.rows[0].cells].find(th=>/^частота$/i.test(th.textContent.trim()));
+  if (thFreq) thFreq.innerHTML='Частота<small style="display:block;font-weight:400;font-size:.72em;opacity:.75">база - буст</small>';
+  // Колонка «Производительность» добавляется динамически (см. catalogReady ниже).
+}
 catalogReady.then(() => {
+  if (PAGE.kind === 'cpu' && PAGE.perfHeader) {
+    // В разметке cpu.html не было колонки «Производительность» — добавляем заголовок после «Типа»,
+    // чтобы соответствовать строкам buildCpuRows. Мини-шкала поверх числа ставится общим кодом ниже.
+    const thTyp=[...table.tHead.rows[0].cells].find(th=>/^\s*тип\s*$/i.test(th.textContent));
+    if (thTyp) {
+      const thPerf=document.createElement('th'); thPerf.className='nc'; thPerf.textContent=PAGE.perfHeader;
+      thTyp.insertAdjacentElement('afterend', thPerf);
+    }
+  }
   catalogRows.forEach(tr => {
     tr.dataset.selected = 'false';
     tr.style.display = 'none';
@@ -407,7 +557,7 @@ modalBackdrop.addEventListener('click', e => { if(e.target===modalBackdrop && mo
 modalSubmit.addEventListener('click', () => { if(modalAction) modalAction(); else closeModal(); });
 document.getElementById('loginButton').addEventListener('click', () => openModal('Вход и регистрация', '<p>В демонстрационной версии аккаунты ещё не подключены. После подключения регистрации избранные видеокарты будут синхронизироваться между устройствами.</p><input type="email" placeholder="Электронная почта" aria-label="Электронная почта"><input type="password" placeholder="Пароль" aria-label="Пароль">', 'Понятно'));
 const pageInfo = {
-  processors:['Сравнение процессоров','<p>Находится в разработке</p>'],
+  processors:null,
   error:['Нашли ошибку?','<p>Сообщите модель видеокарты, характеристику с ошибкой и правильное значение (если оно известно).</p><textarea id="modalMessage" rows="4" placeholder="Опишите ошибку"></textarea>'],
   contact:['Напишите нам','<input id="contactEmail" type="email" placeholder="Ваш email (необязательно)"><textarea id="modalMessage" rows="4" placeholder="Ваше сообщение"></textarea>'],
   faq:['Часто задаваемые вопросы о видеокартах','<article class="faq-page"><p class="faq-intro">Ответы на популярные вопросы о сравнении видеокарт NVIDIA GeForce, AMD Radeon и Intel Arc, игровых FPS, видеопамяти и выборе GPU для компьютера.</p><h2>Как сравнить видеокарты между собой?</h2><p>Выберите две или несколько моделей в разделе сравнения видеокарт. Сопоставляйте поколение графического процессора, частоты, количество вычислительных блоков, тип и объём видеопамяти, пропускную способность, энергопотребление и требования к блоку питания. Одной характеристики недостаточно, чтобы определить победителя во всех задачах.</p><h2>Какая видеокарта лучше для игр?</h2><p>Лучшая видеокарта зависит от бюджета, разрешения монитора, игр и желаемой частоты кадров. Для корректного выбора сравнивайте независимые игровые тесты в одинаковом разрешении и на одинаковых настройках. Самая дорогая модель нужна не каждому.</p><h2>Как узнать, сколько FPS будет в игре?</h2><p>FPS зависит не только от видеокарты, но и от процессора, оперативной памяти, разрешения, графических настроек, драйверов и конкретной игры. Ищите тесты именно в тех играх и условиях, в которых планируете играть. Результат одной игры нельзя автоматически переносить на все остальные.</p><h2>Что важнее: объём видеопамяти или мощность видеокарты?</h2><p>Важны оба параметра. Объём VRAM влияет на возможность использовать текстуры высокого качества и работать с большими сценами, но сам по себе не гарантирует высокий FPS. Сравнивайте видеопамять вместе с реальными тестами производительности и пропускной способностью.</p><h2>Что означают NVIDIA Blackwell, AMD RDNA и Intel Xe?</h2><p>Это названия архитектур графических процессоров. Архитектура определяет устройство GPU и поддерживаемые возможности. При сравнении старых и новых моделей учитывайте не только поколение, но и результаты тестов, объём памяти и поддержку нужных технологий.</p><h2>Что лучше — NVIDIA GeForce или AMD Radeon?</h2><p>Универсального ответа нет. Сравните производительность в ваших играх, трассировку лучей, технологии масштабирования изображения, кодирование видео, поддержку программ и энергопотребление. Для рабочих задач совместимость с конкретным приложением может быть важнее игрового рейтинга.</p><h2>Подойдёт ли видеокарта к моему компьютеру?</h2><p>Перед покупкой проверьте длину и толщину карты, свободное место в корпусе, мощность и разъёмы блока питания, слот PCI Express и возможности охлаждения. Также убедитесь, что процессор не будет существенно ограничивать производительность в ваших играх.</p><h2>Какой блок питания нужен для видеокарты?</h2><p>Ориентируйтесь на рекомендации производителя конкретной модели, разъёмы питания и энергопотребление всей системы. Учитывайте качество блока питания и запас мощности; не выбирайте его только по максимальной цифре на наклейке.</p><h2>Как сравнивать видеокарты для 1080p, 1440p и 4K?</h2><p>Чем выше разрешение, тем больше нагрузка на GPU и видеопамять. Сравнивайте FPS отдельно для Full HD (1080p), 1440p и 4K: производительность и относительный разрыв между моделями могут отличаться в зависимости от разрешения и игры.</p><h2>Можно ли сравнивать мобильную видеокарту ноутбука с настольной?</h2><p>Нужно учитывать конкретную модель, лимит мощности, охлаждение и настройки ноутбука. Названия с одинаковым номером не всегда означают одинаковую производительность в мобильной и настольной версиях. Лучше опираться на тесты конкретного устройства.</p><h2>Что такое частота ядра, шина памяти и TDP?</h2><p>Частота ядра показывает рабочую частоту GPU; шина памяти влияет на обмен данными с видеопамятью; TDP/TGP помогает оценить тепловые и энергетические требования, но определения различаются у производителей. Ни один из этих показателей отдельно не является точным рейтингом производительности.</p><h2>Можно ли доверять одному рейтингу видеокарт?</h2><p>Любой общий рейтинг упрощает картину: порядок моделей меняется в зависимости от игры, разрешения и технологий. Для выбора используйте несколько независимых тестов и проверяйте условия измерений. Если данные на сайте обозначены как ориентировочные, не воспринимайте их как гарантированный FPS.</p><h2>Как сообщить об ошибке в характеристиках?</h2><p>Откройте пункт «Нашли ошибку?» и укажите модель видеокарты, характеристику и ссылку на источник, если он есть. Это поможет проверить информацию и исправить возможную неточность.</p></article>']
@@ -542,7 +692,7 @@ function submitRateForm(){
 
 document.getElementById('clearDrawing').addEventListener('click',()=>{const editor=drawingPaper.querySelector('.drawing-text-editor');if(editor)finishInlineText(editor,false);saveDrawingSnapshot();drawingCtx.clearRect(0,0,drawingCanvas.width,drawingCanvas.height);});
 document.getElementById('saveDrawing').addEventListener('click',()=>{try{localStorage.setItem(drawingStorageKey,drawingCanvas.toDataURL('image/png'));openModal('Заметка сохранена','<p>Заметка сохранена в этом браузере на этом устройстве. Вы сможете открыть её при следующем посещении сайта.</p>','Понятно');}catch(e){openModal('Не удалось сохранить заметку','<p>В браузере недостаточно места для сохранения. Попробуйте скачать рисунок через «Поделиться».</p>','Закрыть');}});
-async function exportDrawingFile(){const blob=await new Promise(resolve=>drawingCanvas.toBlob(resolve,'image/png'));if(!blob){openModal('Не удалось подготовить рисунок','<p>Попробуйте ещё раз.</p>','Закрыть');return null;}return new File([blob],'gpu-compare-zametka.png',{type:'image/png'});}
+async function exportDrawingFile(){const blob=await new Promise(resolve=>drawingCanvas.toBlob(resolve,'image/png'));if(!blob){openModal('Не удалось подготовить рисунок','<p>Попробуйте ещё раз.</p>','Закрыть');return null;}return new File([blob],(PAGE.kind==='cpu'?'cpu':'gpu')+'-compare-zametka.png',{type:'image/png'});}
 document.getElementById('sendDrawing').addEventListener('click',()=>{
   openModal('Поделиться заметкой','<p>Выберите, что сделать с рисунком.</p><div class="drawing-share-actions"><button type="button" class="btn primary" id="drawingShareOthers">Поделиться</button><button type="button" class="btn" id="drawingSendUs">Отправить нам</button></div>','Закрыть');
   document.getElementById('drawingSendUs').addEventListener('click',async()=>{const file=await exportDrawingFile();if(!file)return;const blob=new Blob([await file.arrayBuffer()],{type:'image/png'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=file.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);closeModal();openModal('Рисунок подготовлен к отправке','<p>Файл заметки скачан. Прикрепите его к письму или сообщению нам. Автоматическая отправка будет доступна после подключения адреса обратной связи.</p>','Понятно');});
@@ -550,13 +700,15 @@ document.getElementById('sendDrawing').addEventListener('click',()=>{
 });
 document.querySelectorAll('.sidebar .navitem').forEach(item => item.addEventListener('click', () => {
   document.querySelectorAll('.sidebar .navitem').forEach(n => n.classList.remove('active')); item.classList.add('active');
-  const page = item.dataset.page; if(page==='compare'){closeModal();return;} if(page==='rate'){openRateModal();return;} if(pageInfo[page]) { openModal(pageInfo[page][0], pageInfo[page][1], 'Понятно'); if(page==='faq') document.querySelector('.site-modal')?.classList.add('faq-reading'); }
+  const page = item.dataset.page;
+  if(page==='processors'){ location.href='cpu.html'; return; }
+  if(page==='compare'){closeModal();return;} if(page==='rate'){openRateModal();return;} if(pageInfo[page]) { openModal(pageInfo[page][0], pageInfo[page][1], 'Понятно'); if(page==='faq') document.querySelector('.site-modal')?.classList.add('faq-reading'); }
 }));
 document.getElementById('shareComparison').addEventListener('click', async () => {
   const selected = [...table.tBodies[0].rows].filter(tr => tr.dataset.selected==='true').map(tr => gpuName(tr));
-  const url = new URL(window.location.href); url.searchParams.set('gpus', selected.join('|'));
+  const url = new URL(window.location.href); url.searchParams.set(PAGE.shareParam, selected.join('|'));
   const shareUrl = url.href;
-  try { await navigator.clipboard.writeText(shareUrl); openModal('Ссылка скопирована','<p>Ссылка содержит выбранные видеокарты. После размещения сайта на домене ею можно будет поделиться с другими пользователями.</p><input readonly value="'+shareUrl.replace(/&/g,'&amp;').replace(/"/g,'&quot;')+'">','Готово'); }
+  try { await navigator.clipboard.writeText(shareUrl); openModal('Ссылка скопирована','<p>Ссылка содержит выбранные '+PAGE.nounPl+'. После размещения сайта на домене ею можно будет поделиться с другими пользователями.</p><input readonly value="'+shareUrl.replace(/&/g,'&amp;').replace(/"/g,'&quot;')+'">','Готово'); }
   catch(e) { openModal('Ссылка на сравнение','<p>Скопируйте ссылку ниже.</p><input id="shareUrlInput" readonly value="'+shareUrl.replace(/&/g,'&amp;').replace(/"/g,'&quot;')+'">','Выделить ссылку',()=>{const f=document.getElementById('shareUrlInput');f.select();document.execCommand('copy');closeModal();}); }
 });
 document.getElementById('siteFeedback').addEventListener('click', () => openModal('Отзыв о сайте','<p>Что понравилось или что стоит улучшить?</p><textarea id="feedbackText" rows="4" placeholder="Напишите отзыв"></textarea><input id="feedbackEmail" type="email" placeholder="Email для ответа (необязательно)">','Подготовить письмо',()=>{
@@ -564,7 +716,7 @@ document.getElementById('siteFeedback').addEventListener('click', () => openModa
   window.location.href='mailto:?subject='+encodeURIComponent('Отзыв о GPU Compare')+'&body='+encodeURIComponent(msg+(email?'\n\nEmail для ответа: '+email:'')); closeModal();
 }));
 // Restore selected cards from a shared URL (?gpus=... — выбор пользователя, не «все карты»).
-catalogReady.then(() => { try { const shared = new URL(window.location.href).searchParams.get('gpus'); if(shared) { shared.split('|').forEach(n => { const tr=catalogRows.find(t => gpuName(t)===n); if(tr) addGpu(tr); }); } } catch(e) {} });
+catalogReady.then(() => { try { const shared = new URL(window.location.href).searchParams.get(PAGE.shareParam); if(shared) { shared.split('|').forEach(n => { const tr=catalogRows.find(t => gpuName(t)===n); if(tr) addGpu(tr); }); } } catch(e) {} });
 
 
 /* ===== v7: поля в одну строку, перетаскивание строк, шкалы производительности ===== */
@@ -572,7 +724,9 @@ var perfReady=false;
 const reduceMotion=matchMedia('(prefers-reduced-motion:reduce)').matches;
 
 // 1. Подпись поля подбирается под его ширину — все поля помещаются в одну строку.
-const PH={'filter-all':['Все видеокарты','Все'],'filter-nvidia':['NVIDIA — выбрать модель','NVIDIA — модель','NVIDIA'],'filter-amd':['AMD — выбрать модель','AMD — модель','AMD'],'filter-intel':['INTEL — выбрать модель','INTEL — модель','INTEL'],'filter-retro':['Ретро карты до 2015г','Ретро до 2015г','Ретро'],'filter-favorites':['★ Избранные','★ Избр.','★']};
+const PH = PAGE.kind==='cpu'
+  ? {'filter-all':['Все процессоры','Все'],'filter-amd':['AMD — выбрать модель','AMD — модель','AMD'],'filter-intel':['INTEL — выбрать модель','INTEL — модель','INTEL'],'filter-retro':['Ретро процессоры до 2010г','Ретро до 2010г','Ретро'],'filter-favorites':['Избранные','Избр.','★']}
+  : {'filter-all':['Все видеокарты','Все'],'filter-nvidia':['NVIDIA — выбрать модель','NVIDIA — модель','NVIDIA'],'filter-amd':['AMD — выбрать модель','AMD — модель','AMD'],'filter-intel':['INTEL — выбрать модель','INTEL — модель','INTEL'],'filter-retro':['Ретро карты до 2015г','Ретро до 2015г','Ретро'],'filter-favorites':['Избранные','Избр.','★']};
 const phCtx=document.createElement('canvas').getContext('2d');
 function fitPlaceholders(){
   for(const [id,list] of Object.entries(PH)){
@@ -589,7 +743,7 @@ if(document.fonts)document.fonts.ready.then(fitPlaceholders);
 // Производительность = Passmark G3D Mark (data-perf у каждой строки); шкала показывает % от лучшей карты среди выбранных.
 // С базой данных достаточно выводить <tr data-perf="..."> — таблица GPU_PERF тогда не нужна.
 const GPU_PERF={}; // демо-таблица убрана, используется data-perf
-const perfList=document.getElementById('perfList'), perfEmpty=document.getElementById('perfEmpty'), perfPanel=document.getElementById('perfPanel'), perfEls=new Map();
+const perfList=document.getElementById('perfList'), perfEmpty=document.getElementById('perfEmpty'), perfPanel=document.getElementById('perfPanel'), perfEls=new Map(); // на странице cpu.html этих элементов нет — весь блок «график производительности» там отключён
 const fmtPct=v=>(v>=10?Math.round(v):v.toFixed(1).replace('.',','))+'%';
 catalogReady.then(()=>{ catalogRows.forEach(tr=>{
   tr.dataset.perf=tr.dataset.perf||GPU_PERF[gpuName(tr)]||0;
@@ -610,6 +764,12 @@ function setBar(fill,label,pct,instant){
 function renderPerf(){
   const sel=catalogRows.filter(tr=>tr.dataset.selected==='true').sort((a,b)=>b.dataset.perf-a.dataset.perf);
   const max=sel.length?+sel[0].dataset.perf:0, keep=new Set(sel.map(gpuName));
+  // На странице процессоров боковой панели «Производительность» нет — обновляем только мини-шкалы в таблице.
+  if(!perfList||!perfEmpty){
+    sel.forEach(tr=>{const pct=max?tr.dataset.perf/max*100:0; setBar(tr.querySelector('.mini-fill'),tr.querySelector('.mini-perf b'),pct);});
+    catalogRows.forEach(tr=>{if(tr.dataset.selected!=='true')setBar(tr.querySelector('.mini-fill'),tr.querySelector('.mini-perf b'),0,true);});
+    return;
+  }
   perfEmpty.hidden=sel.length>0;
   const first=new Map([...perfEls].map(([k,el])=>[k,el.offsetTop]));
   for(const [k,el] of perfEls) if(!keep.has(k)){el.style.top=el.offsetTop+'px';el.classList.add('leaving');perfEls.delete(k);setTimeout(()=>el.remove(),300);}
@@ -717,7 +877,7 @@ function renderT(){
   const esc=escapeRateHtml;
   const max=rows.reduce((m,r)=>Math.max(m,+r.dataset.perf||0),0);
   let h='<div class="tg-row" role="row"><div class="tg-corner" role="columnheader"></div>';
-  if(!rows.length)h+='<div class="tg-head t-empty" role="columnheader">Выберите видеокарты в полях выше</div>';
+  if(!rows.length)h+='<div class="tg-head t-empty" role="columnheader">Выберите '+PAGE.nounAccPl+' в полях выше</div>';
   rows.forEach(r=>{
     const n=gpuName(r), pct=max?(+r.dataset.perf||0)/max*100:0, fav=r.dataset.favorite==='true', sub=r.cells[1].querySelector('small');
     h+='<div class="tg-head" role="columnheader" data-name="'+esc(n)+'" data-brand="'+r.dataset.brand+'"><div class="t-acts"><span class="t-grip" title="Потяните, чтобы изменить порядок" aria-hidden="true"></span>'
@@ -780,7 +940,7 @@ try{if(localStorage.getItem(ORIENT_KEY)==='h')setOrient(true,false);}catch(e){}
 tReady=true;renderT();
 
 // Выбор темы: сохранённая настройка имеет приоритет; по умолчанию на мобильных — чёрно-белая.
-(function(){const picker=document.getElementById('themePicker'),key='gpuCompareThemeV1',themes={default:'',mono:'theme-mono',light:'theme-light',purple:'theme-purple',forest:'theme-forest'};let saved='';try{saved=localStorage.getItem(key)||'';}catch(e){}const initial=saved||((window.matchMedia&&window.matchMedia('(max-width: 760px)').matches)?'mono':'default');picker.value=themes[initial]!==undefined?initial:'default';function applyTheme(value){document.body.classList.remove(...Object.values(themes).filter(Boolean));if(themes[value])document.body.classList.add(themes[value]);picker.value=value;try{localStorage.setItem(key,value);}catch(e){}}applyTheme(initial);picker.addEventListener('change',()=>applyTheme(picker.value));})();
+(function(){const picker=document.getElementById('themePicker'),key=PAGE.themeKey,themes={default:'',mono:'theme-mono',light:'theme-light',purple:'theme-purple',forest:'theme-forest'};let saved='';try{saved=localStorage.getItem(key)||'';}catch(e){}const initial=saved||((window.matchMedia&&window.matchMedia('(max-width: 760px)').matches)?'mono':'default');picker.value=themes[initial]!==undefined?initial:'default';function applyTheme(value){document.body.classList.remove(...Object.values(themes).filter(Boolean));if(themes[value])document.body.classList.add(themes[value]);picker.value=value;try{localStorage.setItem(key,value);}catch(e){}}applyTheme(initial);picker.addEventListener('change',()=>applyTheme(picker.value));})();
 
 /* ===== Уведомление о cookie (включается/выключается переключателем FEATURES.cookies) ===== */
 (function(){
@@ -788,6 +948,10 @@ tReady=true;renderT();
   var KEY='umoCookieNoticeV1', ok=false;
   try{ok=localStorage.getItem(KEY)==='1';}catch(e){}
   if(!ok)bar.classList.add('show');
-  document.getElementById('cookieOk').addEventListener('click',function(){bar.classList.remove('show');try{localStorage.setItem(KEY,'1');}catch(e){}});
+  document.getElementById('cookieOk').addEventListener('click',function(){bar.classList.remove('show');try{localStorage.setItem(KEY,'1');}catch(e){}
+  // Cookie для метрик: аналитические скрипты проверяют наличие umo_metrics_consent=1 перед загрузкой.
+  try{var d=new Date();d.setFullYear(d.getFullYear()+1);document.cookie='umo_metrics_consent=1;path=/;max-age=31536000;SameSite=Lax'+(location.protocol==='https:'?';Secure':'');}catch(e){}
+  try{window.dispatchEvent(new CustomEvent('umo:metrics-consent'));}catch(e){}
+});
   document.getElementById('cookieMore').addEventListener('click',function(){openModal('Как сайт использует cookie и память браузера','<p>Сейчас сайт хранит в вашем браузере только ваши настройки: тему оформления, избранные видеокарты, заметку на листе и ориентацию таблицы. Эти данные остаются на вашем устройстве и никуда не передаются.</p><p>Удалить их можно в настройках браузера (очистка данных сайта). Если на сайте появятся сервисы статистики или другие cookie, этот текст будет дополнен.</p>','Понятно');});
 })();
