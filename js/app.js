@@ -106,7 +106,6 @@ function shortMark(name){
 }
 function buildRows(rows) {
   const frag = document.createDocumentFragment();
-  let tensorColumnHasData = false; // станет true, если хоть у одной карты есть тензорные/RT-ядра
   rows.forEach(item => {
     const full = (item['name']||'').trim(); if (!full) return;
     const perfName = (item['Videocard Name_perf']||full).trim();
@@ -125,8 +124,6 @@ function buildRows(rows) {
     const tdpv = numOf(item['tdp']), psuv = numOf(item['suggested_psu']);
     const power = (tdpv!==null?fmtInt(tdpv)+' Вт':'—') + ' / ' + (psuv!==null?fmtInt(psuv)+' Вт':'—');
     const tc = numOf(item['tensor_cores']), rc = numOf(item['rt_cores']);
-    const hasTensor = tc !== null || rc !== null; // для авто-показа колонки «Тензорные ядра / RT-ядра»
-    if (hasTensor) tensorColumnHasData = true;
     const tens = (tc!==null?fmtInt(tc):'—') + ' / ' + (rc!==null?fmtInt(rc):'—');
     const proc = (item['proc_process_size']||'').trim(); const nuc = (item['nucleus']||'').trim();
     const tech = (proc||'—') + ' / ' + (nuc||'—');
@@ -150,14 +147,12 @@ function buildRows(rows) {
     frag.appendChild(tr);
   });
   tableBody.appendChild(frag);
-  // Колонка «Тензорные ядра / RT-ядра»: скрыта, пока ни у одной карты нет значений;
-  // если хотя бы у одной есть — показываем её для всей таблицы.
-  // Скрываем/показываем ВСЮ колонку (заголовок + ячейки всех строк).
-  // Атрибут hidden на <th> скрывает только заголовок, поэтому применяем к каждому элементу колонки.
-  const tensorOn = tensorColumnHasData;
-  table.querySelectorAll('.col-tensor').forEach(el => {
-    if (tensorOn) el.removeAttribute('hidden'); else el.setAttribute('hidden','');
-  });
+  // Колонка «Тензорные ядра / RT-ядра» по умолчанию СКРЫТА полностью
+  // (заголовок + все ячейки), даже если в базе есть карты со значениями.
+  // Она появляется только когда в сравнение выбрана хотя бы одна карта
+  // с тензорными или RT-ядрами — см. updateTensorColumn() (вызывается при
+  // добавлении/удалении карт из сравнения).
+  updateTensorColumn();
   catalogRows = [...tableBody.querySelectorAll('tr')];
   applyHitsToRows();
   catalogResolve();
@@ -183,8 +178,18 @@ function updateCounts() {
   const selected = catalogRows.filter(tr => tr.dataset.selected === 'true');
   const shown = document.getElementById('shown');
   if (shown) shown.textContent = 'В сравнении ' + selected.length + ' видеокарт';
+  updateTensorColumn();
   if (perfReady) renderPerf();
   if (tReady) renderT();
+}
+// Колонка «Тензорные ядра / RT-ядра»: скрыта, пока в сравнении нет ни одной
+// карты со значениями. Показывается целиком (заголовок + все ячейки), как только
+// такая карта выбрана; прячется обратно при удалении последней такой карты.
+function updateTensorColumn() {
+  const on = catalogRows.some(tr => tr.dataset.selected === 'true' && tr.querySelector('.col-tensor')?.textContent.replace(/[\s\u00a0—]/g,'') !== '');
+  table.querySelectorAll('.col-tensor').forEach(el => {
+    if (on) el.removeAttribute('hidden'); else el.setAttribute('hidden','');
+  });
 }
 const favoriteStorageKey = 'gpuCompareFavoritesV1';
 let favoriteNames = new Set();
