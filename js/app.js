@@ -82,7 +82,7 @@ const MARK_RULES = [
   [/^GeForce GTX( \d{3,4}.*| .*|)$/i,'GTX'],[/^GeForce GTS( .*|)$/i,'GTS'],[/^GeForce GT( \d.*|)$/i,'GT'],
   [/^GeForce Go (\d{3,4})/i,(m)=>'GO'+m[1].slice(-2)],[/^GeForce (\d{3,4})/i,(m)=>'GF'+m[1].slice(-2)],
   [/^GeForce (\d{3,4}M)/i,(m)=>'GM'+m[1].replace(/\D/g,'').slice(0,2)],[/^GeForce/,'GF'],
-  [/^Titan (\w*)/i,'TTN'],[/^Tesla (CV )?(\d.*)/i,'TSL'],[/^Quadro GP(\d+)/i,'QGP'],[/^Quadro NVS( \d+.*|)/i,'NVS'],
+  [/^Titan (\w*)/i,'TTN'],[/^Tesla /i,'TSL'],[/^Quadro GP(\d+)/i,'QGP'],[/^Quadro NVS( \d+.*|)/i,'NVS'],
   [/^Quadro P(\d+)/i,'QP'],[/^Quadro RTX( .*|)/i,'QRT'],[/^Quadro (K|M|S|Series )?(\d+.*)/i,'QDR'],[/^DGX/,'DGX'],
   [/^RTX 5880 Ada$/i,'ADA'],[/^T(\d{3}) Mobile$/i,(m)=>'T'+m[1]],[/^CMP( .*|)/i,'CMP'],[/^A(10G|10|40|16|800)( |$)/i,'ACCL'],[/^L(\d{2})( |$)/i,'ACC'],
   [/^Radeon Instinct MI(\d+.*)/i,'INST'],[/^Radeon RX Vega( \d+.*)?/i,'RXV'],[/^Radeon RX( \d+.*|)/i,'RX'],
@@ -171,7 +171,7 @@ function closeFilterMenus(except) {
 function updateCounts() {
   const selected = catalogRows.filter(tr => tr.dataset.selected === 'true');
   const shown = document.getElementById('shown');
-  if (shown) shown.textContent = 'В сравнении ' + selected.length + ' видеокарт · демо-данные';
+  if (shown) shown.textContent = 'В сравнении ' + selected.length + ' видеокарт';
   if (perfReady) renderPerf();
   if (tReady) renderT();
 }
