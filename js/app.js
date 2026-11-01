@@ -131,6 +131,10 @@ function buildRows(rows) {
     const io = [iface||'—', conn||'—', dx?('DX '+dx):'—'].join(' / ');
     const tr = document.createElement('tr');
     tr.dataset.brand = bkey; tr.dataset.year = year; tr.dataset.perf = String(perf);
+    // Данные тензорных/RT-ядер храним в атрибутах строки (а не по тексту ячейки):
+    // текст «— / —» содержит дефисы, которые нельзя надёжно отличить от пустых значений.
+    tr.dataset.tensor = (tc !== null && tc > 0) ? '1' : '';
+    tr.dataset.rt = (rc !== null && rc > 0) ? '1' : '';
     const mark = shortMark(perfName || full);
     tr.innerHTML = '<td class="remove-cell"></td>'
       + '<td><div class="gpu-name"><span class="gpu-mark ' + bkey.toLowerCase() + '-mark">' + escapeHtml(mark) + '</span><span><span class="brand-name ' + bkey.toLowerCase() + '">' + escapeHtml(full) + '</span><small>' + escapeHtml(bkey + (arch ? ' · ' + arch : '')) + '</small></span></div></td>'
@@ -186,7 +190,10 @@ function updateCounts() {
 // карты со значениями. Показывается целиком (заголовок + все ячейки), как только
 // такая карта выбрана; прячется обратно при удалении последней такой карты.
 function updateTensorColumn() {
-  const on = catalogRows.some(tr => tr.dataset.selected === 'true' && tr.querySelector('.col-tensor')?.textContent.replace(/[\s\u00a0—]/g,'') !== '');
+  // Колонка показывается, только если среди ВЫБРАННЫХ карт есть хотя бы одна
+  // с реальными значениями (tensor_cores > 0 или rt_cores > 0). Карты с «— / —»
+  // не учитываются.
+  const on = catalogRows.some(tr => tr.dataset.selected === 'true' && (tr.dataset.tensor === '1' || tr.dataset.rt === '1'));
   table.querySelectorAll('.col-tensor').forEach(el => {
     if (on) el.removeAttribute('hidden'); else el.setAttribute('hidden','');
   });
