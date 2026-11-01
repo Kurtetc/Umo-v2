@@ -11,7 +11,17 @@ function db_pdo(array $cfg) {
 function db_connect() {
     $cfg = require __DIR__ . '/config.php';
     try {
-        return db_pdo($cfg);
+        // Автоподбор локального адреса MySQL для OpenServer: в некоторых сборках
+        // mysqld слушает не 127.0.0.1, а 127.0.1.31 (или другой порт). Пробуем
+        // варианты из config.php по очереди; на боевом хостинге (Beget) первый
+        // же вариант срабатывает и цикл завершается мгновенно.
+        $hosts = array_values(array_unique(array_filter([$cfg['host'], '127.0.1.31', 'localhost'])));
+        $last = null;
+        foreach ($hosts as $h) {
+            try { return db_pdo(array_merge($cfg, ['host' => $h])); }
+            catch (PDOException $e2) { $last = $e2; }
+        }
+        throw $last;
     } catch (PDOException $e) {
         http_response_code(500);
         header('Content-Type: application/json; charset=utf-8');
