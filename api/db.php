@@ -15,7 +15,11 @@ function db_connect() {
     } catch (PDOException $e) {
         http_response_code(500);
         header('Content-Type: application/json; charset=utf-8');
-        echo json_encode(['error' => 'db_connect_failed', 'detail' => $e->getMessage() . '. Проверьте настройки в api/config.php (хост, пользователь, пароль, имя базы). На OpenServer по умолчанию: root / пустой пароль.'], JSON_UNESCAPED_UNICODE);
+        echo json_encode([
+            'error' => 'db_connect_failed',
+            'detail' => $e->getMessage(),
+            'hint' => '1) В панели OpenServer убедитесь, что МОДУЛЬ MySQL запущен (зелёный индикатор; если он остановлен — нажмите "Запустить"). 2) Если MySQL запущен, но ошибка остаётся — скорее всего у вас ДРУГОЙ порт: откройте Консоль -> netstat -ano | findstr 3306, посмотрите, на каком порту слушает mysqld (у некоторых сборки OpenServer используют 3307/3308), и пропишите его в api/config.php: host => "127.0.0.1:3307". 3) Проверьте user/pass в api/config.php (OpenServer по умолчанию: root / пустой пароль). 4) Убедитесь, что правите config.php именно того домена, который открыт в браузере (папка domains/mysite2/api/config.php), а не копию из другого домена.'
+        ], JSON_UNESCAPED_UNICODE);
         exit;
     }
 }
