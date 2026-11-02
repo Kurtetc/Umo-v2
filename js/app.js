@@ -3,12 +3,12 @@
 var PAGE = (window.PAGE_TYPE === 'cpu' || /cpu\.html/i.test(location.pathname)) ? {
   kind:'cpu', api:'api/cpus.php', hitApi:'api/cpu_hit.php', hitsKey:'cpuCompareHitsV1',
   favKey:'cpuCompareFavoritesV1', drawKey:'cpuCompareDrawingNoteV1', orientKey:'cpuCompareOrientV1',
-  themeKey:'cpuCompareThemeV1', noun:'процессор', nounGen:'процессора', nounPl:'процессоров', nounAccPl:'процессоры',
-  retroYear:2010, shareParam:'cpus', perfHeader:'Производительность'
+  themeKey:'cpuCompareThemeV1', orientKeyLegacy:'gpuCompareOrientV1', noun:'процессор', nounGen:'процессора', nounPl:'процессоров', nounAccPl:'процессоры',
+  retroYear:2010, shareParam:'cpus', perfHeader:null
 } : {
   kind:'gpu', api:'api/gpus.php', hitApi:'api/hit.php', hitsKey:'gpuCompareHitsV1',
   favKey:'gpuCompareFavoritesV1', drawKey:'gpuCompareDrawingNoteV1', orientKey:'gpuCompareOrientV1',
-  themeKey:'gpuCompareThemeV1', noun:'видеокарта', nounGen:'видеокарты', nounPl:'видеокарт', nounAccPl:'видеокарты',
+  themeKey:'gpuCompareThemeV1', orientKeyLegacy:null, noun:'видеокарта', nounGen:'видеокарты', nounPl:'видеокарт', nounAccPl:'видеокарты',
   retroYear:2015, shareParam:'gpus', perfHeader:null
 };
 const viewport=document.getElementById('viewport'), table=document.getElementById('gpuTable');
@@ -225,6 +225,35 @@ function cpuCacheCell(l1,l2,l3){
   if(parts.every(p=>!p)) return '—';
   return parts.map(p=>p||'—').join(' / ');
 }
+// Значение поля из CSV может быть «n/a», «N/A», «—» или пустым — считаем, что значения нет.
+function cpuVal(s){ s=String(s==null?'':s).replace(/\u00a0/g,' ').trim(); return (!s||/^n\/?a$/i.test(s)||s==='—')?'':s; }
+// Тип процессора: только «десктопный/ноутбучный/серверный» (в виде иконки в столбце «Тип»), без лишних слов.
+function cpuTypeKey(t){
+  t=cpuVal(t).toLowerCase();
+  if(/ноутб|мобил|mobile|notebook/.test(t)) return 'laptop';
+  if(/сервер|server|embedded|рабоч. станц|workstation|w-?\d/.test(t)) return 'server';
+  if(/настол|дескт|desktop/.test(t)) return 'desktop';
+  return '';
+}
+// Иконка типа: ноутбуук / компьютер / сервер (SVG, цвет наследуется от темы).
+const CPU_TYPE_ICONS = {
+  desktop:'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/></svg>',
+  laptop:'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="5" width="16" height="10" rx="1.5"/><path d="M2 19h20"/></svg>',
+  server:'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="6" rx="1.5"/><rect x="4" y="15" width="16" height="6" rx="1.5"/><path d="M4 9v6M20 9v6M8 6h.01M8 18h.01"/></svg>'
+};
+function cpuArchName(s){ // «Turin (2024−2025)» -> «Turin»; убираем скобки с годами и приписки вида «(server)»
+  s = cpuVal(s).replace(/\s*\((?:[^)]*?)\)\s*/g,' ').replace(/\s+/g,' ').trim();
+  return s;
+}
+// Название процессора без служебных приписок («для ноутбуков», «Skylake (server) (2017?2018)» и т.п.)
+function cpuCleanName(name){
+  let n = String(name||'').replace(/\u00a0/g,' ').trim();
+  n = n.replace(/\s*[[(]\s*(?:для\s*)?(?:ноутбу\w*|сервер\w*|настольн\w*|десктоп\w*|мобильн\w*|workstation|server|desktop|mobile|notebook|laptop)[^)\]]*[)\]]\s*/gi,' ');
+  n = n.replace(/\s+for\s+(?:laptops?|desktops?|servers?|mobile)\b/gi,' ');
+  n = n.replace(/\s*(?:для\s+(?:ноутбуков|настольных\s+пк|серверов)|для\s+ноутбука)\s*$/i,'');
+  n = n.replace(/\s{2,}/g,' ').trim().replace(/[,–—-]\s*$/,'').trim();
+  return n;
+}
 function cpuShortMark(name,brand){
   name=String(name||'').trim();
   let m;
@@ -254,36 +283,40 @@ function cpuShortMark(name,brand){
   const w=name.match(/[A-Za-z]+|\d+/g);
   return (w?w[0]:(brand||'CPU')).toUpperCase().slice(0,4);
 }
+// Порядок колонок на странице процессоров (соответствует <th> в cpu.html):
+// Процессор | Сокет/техпроцесс | Тип | Релиз | Ядра/потоки | Частота | Кэш | Max t°/TDP | Тип памяти | Видеоядро | Ревизия PCI/линий | Архитектура
 function buildCpuRows(rows){
   const frag=document.createDocumentFragment();
   rows.forEach(item=>{
-    const full=(item['name']||'').trim(); if(!full) return;
+    const fullRaw=(item['name']||'').trim(); if(!fullRaw) return;
+    const full=cpuCleanName(fullRaw); // без приписок «для ноутбуков», «(server) (2017?2018)» и т.п.
     const braw=(item['brand']||'').toUpperCase();
     const bkey=braw.includes('AMD')?'AMD':braw.includes('INT')?'INTEL':braw.includes('NVD')?'NVIDIA':'OTHER';
     const year=+item['rel_year']||'';
     const perf=+item['perf']||0;
     const cores=+item['cores']||null, threads=+item['threads']||null;
     const ct=(cores!==null?fmtInt(cores):'—')+' / '+(threads!==null?fmtInt(threads):'—');
-    const socket=(item['socket']||'').trim(), lith=(item['lithography']||'').trim();
-    const sockLith=(socket||'—')+' / '+(lith||'—');
+    const socket=cpuVal(item['socket']), lith=cpuVal(item['lithography']);
+    const sockLith=[socket,lith].filter(Boolean).join(' / ')||'—';
     const temp=+item['max_temp']||null, tdp=+item['tdp']||null;
     const power=(temp!==null?fmtInt(temp)+' °C':'—')+' / '+(tdp!==null?fmtInt(tdp)+' Вт':'—');
-    const memtype=(item['mem_type']||'').trim()||'—';
-    let igpu=(item['igpu']||'').trim(); if(!igpu||/^n\/?a$/i.test(igpu)) igpu='—';
-    const prec=(item['pci_rev']||'').trim().replace(/,/g,'.'), plan=(item['pci_lanes']||'').trim();
-    const revPart=prec?('PCIe '+prec):'';
-    const lanePart=plan?(plan+' линий'):'';
-    const pciCell=[revPart,lanePart].filter(Boolean).join(' / ')||'—';
-    const arch=(item['arch_name']||'').trim(), typ=(item['cpu_type']||'').trim();
+    const memtype=cpuVal(item['mem_type'])||'—';
+    const igpu=cpuVal(item['igpu'])||'—';
+    // «Ревизия PCI / линий»: только значения, например «5 / 48»; n/a = нет значения.
+    const prec=cpuVal(item['pci_rev']).replace(/,/g,'.'), plan=cpuVal(item['pci_lanes']);
+    const pciCell=[prec,plan].filter(Boolean).join(' / ')||'—';
+    const arch=cpuArchName(item['arch_name']);
+    const typeKey=cpuTypeKey(item['cpu_type']);
+    const typeName=cpuVal(item['cpu_type']);
     const tr=document.createElement('tr');
     tr.dataset.brand=bkey; tr.dataset.year=year; tr.dataset.perf=String(perf);
     const mark=cpuShortMark(full,bkey);
+    const typeIcon=typeKey?CPU_TYPE_ICONS[typeKey]:'—';
     tr.innerHTML='<td class="remove-cell"></td>'
-      + '<td><div class="gpu-name"><span class="gpu-mark '+bkey.toLowerCase()+'-mark">'+escapeHtml(mark)+'</span><span><span class="brand-name '+bkey.toLowerCase()+'">'+escapeHtml(full)+'</span><small>'+escapeHtml([bkey!=='OTHER'?bkey:'',typ,arch].filter(Boolean).join(' · '))+'</small></span></div></td>'
-      + '<td>'+escapeHtml(cpuRelCell(item))+'</td>'
+      + '<td><div class="gpu-name"><span class="gpu-mark '+bkey.toLowerCase()+'-mark">'+escapeHtml(mark)+'</span><span><span class="brand-name '+bkey.toLowerCase()+'">'+escapeHtml(full)+'</span><small>'+escapeHtml([bkey!=='OTHER'?bkey:'',arch].filter(Boolean).join(' · '))+'</small></span></div></td>'
       + '<td>'+escapeHtml(sockLith)+'</td>'
-      + '<td>'+escapeHtml(typ||'—')+'</td>'
-      + '<td class="nc">'+(item['perf']!=null?decC(item['perf']):'—')+'</td>'
+      + '<td class="cpu-type-cell" title="'+escapeHtml(typeName||'Тип не указан')+'">'+typeIcon+'</td>'
+      + '<td>'+escapeHtml(cpuRelCell(item))+'</td>'
       + '<td>'+ct+'</td>'
       + '<td>'+escapeHtml(cpuFreqCell(item['base_clock'],item['boost_clock']))+'</td>'
       + '<td>'+escapeHtml(cpuCacheCell(item['cache_l1'],item['cache_l2'],item['cache_l3']))+'</td>'
@@ -516,21 +549,11 @@ try{const saved=localStorage.getItem(drawingStorageKey);if(saved){const img=new 
 //    Исключение — ссылки «поделиться» с параметром ?gpus=... (востановление ниже).
 // 2) Восстанавливаем флаги избранного из localStorage.
 if (PAGE.kind === 'cpu') {
-  // Подпись под столбцом «Частота»: база – буст (мелким шрифтом, как у видеокарт в «Частота ядра»)
+  // Подпись под столбцом «Частота»: база - буст (мелким шрифтом, как у видеокарт в «Частота ядра»)
   const thFreq=[...table.tHead.rows[0].cells].find(th=>/^частота$/i.test(th.textContent.trim()));
   if (thFreq) thFreq.innerHTML='Частота<small style="display:block;font-weight:400;font-size:.72em;opacity:.75">база - буст</small>';
-  // Колонка «Производительность» добавляется динамически (см. catalogReady ниже).
 }
 catalogReady.then(() => {
-  if (PAGE.kind === 'cpu' && PAGE.perfHeader) {
-    // В разметке cpu.html не было колонки «Производительность» — добавляем заголовок после «Типа»,
-    // чтобы соответствовать строкам buildCpuRows. Мини-шкала поверх числа ставится общим кодом ниже.
-    const thTyp=[...table.tHead.rows[0].cells].find(th=>/^\s*тип\s*$/i.test(th.textContent));
-    if (thTyp) {
-      const thPerf=document.createElement('th'); thPerf.className='nc'; thPerf.textContent=PAGE.perfHeader;
-      thTyp.insertAdjacentElement('afterend', thPerf);
-    }
-  }
   catalogRows.forEach(tr => {
     tr.dataset.selected = 'false';
     tr.style.display = 'none';
@@ -867,7 +890,7 @@ perfReady=true;renderPerf();
 
 /* ===== v18: ориентация таблицы (видеокарты в строках / в столбцах) ===== */
 var tReady=false;
-const gridT=document.getElementById('gridT'), tPanel=document.querySelector('.table-panel'), orientBtn=document.getElementById('orientToggle'), ORIENT_KEY='gpuCompareOrientV1';
+const gridT=document.getElementById('gridT'), tPanel=document.querySelector('.table-panel'), orientBtn=document.getElementById('orientToggle'), ORIENT_KEY=PAGE.orientKey;
 function renderT(){
   const rows=[...table.tBodies[0].rows].filter(r=>r.dataset.selected==='true');
   // Список видимых колонок строится по реальным <th>: скрытые (hidden, напр. «Тензорные ядра / RT-ядра») пропускаются,
