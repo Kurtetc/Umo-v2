@@ -786,8 +786,9 @@ const fmtPct=v=>(v>=10?Math.round(v):v.toFixed(1).replace('.',','))+'%';
 catalogReady.then(()=>{ catalogRows.forEach(tr=>{
   tr.dataset.perf=tr.dataset.perf||GPU_PERF[gpuName(tr)]||0;
   const cell=tr.cells[1];
-  // На странице процессоров отдельного столбца «Производительность» нет — шкала не рисуется.
-  if(PAGE.kind!=='cpu') cell.insertAdjacentHTML('beforeend','<div class="mini-perf"><span class="mini-track"><i class="mini-fill"></i></span><b>0%</b></div>');
+  // Мини-шкала производительности возвращается как раньше: создаётся на обеих страницах (видеокарты и процессоры).
+  // На странице процессоров строки без perf>0 помечены классом is-empty — там шкала скрыта через CSS.
+  cell.insertAdjacentHTML('beforeend','<div class="mini-perf"><span class="mini-track"><i class="mini-fill"></i></span><b>0%</b></div>');
   cell.querySelector('.gpu-name').insertAdjacentHTML('afterbegin','<span class="row-grip" title="Потяните, чтобы изменить порядок" aria-hidden="true"></span>');
 }); updateCounts(); });
 // Шкала плавно вырастает/уменьшается (CSS transition), число меняется синхронно с ней.

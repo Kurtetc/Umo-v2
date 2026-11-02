@@ -416,3 +416,6 @@ body.page-cpu #gpuTable .gpu-mark{width:auto;min-width:29px;padding:0 5px;font-s
 /* Иконки типа (десктоп/ноутбук/сервер) — по центру ячейки */
 #gpuTable .cpu-type-cell{text-align:center;color:#8fb6d1}
 #gpuTable .cpu-type-cell svg{vertical-align:middle}
+/* Строки процессоров без данных производительности (perf=0, класс is-empty у ячейки имени):
+   мини-шкала «Производительность» под ними не показывается. */
+body.page-cpu #gpuTable td.cpu-name-cell.is-empty .mini-perf{display:none}
