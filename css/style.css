@@ -16,6 +16,8 @@ button,input,select{font:inherit}.app{height:100vh;display:grid;grid-template-ro
 .gpu-filter.open .filter-options{display:block}
 .filter-option{display:block;width:100%;padding:9px 10px;border:0;border-radius:6px;background:transparent;text-align:left;color:#dceaf7;font-size:11px;cursor:pointer}
 .filter-option:hover,.filter-option:focus{background:color-mix(in srgb,var(--brand-color) 16%,#102238);outline:none}
+.filter-pending{opacity:.7;cursor:default!important;animation:filterPending 1.2s ease-in-out infinite alternate}
+@keyframes filterPending{from{opacity:.45}to{opacity:.9}}
 .all-filter{--brand-color:#42d9f5}
 .nvidia-filter{--brand-color:#719b3c}
 .amd-filter{--brand-color:#c85b62}

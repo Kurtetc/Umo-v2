@@ -56,7 +56,19 @@ let catalogResolve, catalogReject;
 const catalogReady = new Promise((res, rej) => { catalogResolve = res; catalogReject = rej; });
 let catalogStarted = false;
 function startCatalog(){ if(catalogStarted) return; catalogStarted = true; loadCatalog(); }
-if(document.visibilityState === 'visible') setTimeout(startCatalog, 250);
+// «Ленивая» загрузка каталога из БД: запрос стартует в момент, когда пользователь реально
+// собирается выбирать устройства — открыл список фильтров, печатает в поле поиска или нажал
+// стрелку «показать список». Плюс страховка: автозапуск через 1,5 с, если страница видна
+// (например, пользователь восстановил сравнение по ссылке «поделиться»).
+// До загрузки каталога поля поиска и стрелки показывают текст-заглушку вместо пустого списка.
+const CATALOG_PENDING_MSG = 'Загружаем данные…';
+function ensureCatalogSoon(){ startCatalog(); }
+filterBoxes.forEach(box => {
+  const inp = box.querySelector('input');
+  ['focus','pointerdown'].forEach(ev => inp && inp.addEventListener(ev, ensureCatalogSoon));
+  box.querySelector('.filter-arrow')?.addEventListener('pointerdown', ensureCatalogSoon);
+});
+if(document.visibilityState === 'visible') setTimeout(startCatalog, 1500);
 else window.addEventListener('pageshow', startCatalog);
 document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') startCatalog(); }, {once:true});
 catalogReady.catch(e => { console.error('Не удалось загрузить каталог (' + PAGE.kind + ')', e); });
@@ -443,6 +455,18 @@ function registerGpuHit(tr){
 function updateFilterOptions(box) {
   const input = box.querySelector('input');
   const options = box.querySelector('.filter-options');
+  // Каталог ещё не загружен из БД (запрос стартует по фокусу/клику или через 1,5 с):
+  // показываем заглушку вместо пустого списка и перерисовываем меню, когда данные придут.
+  if (!catalogRows.length) {
+    options.innerHTML = '';
+    const pending = document.createElement('div');
+    pending.className = 'filter-option filter-pending';
+    pending.textContent = CATALOG_PENDING_MSG;
+    pending.style.cursor = 'default';
+    options.appendChild(pending);
+    catalogReady.then(() => { if (box.classList.contains('open')) updateFilterOptions(box); }).catch(() => {});
+    return;
+  }
   const q = input.value.trim().toLowerCase();
   const matches = rowsForScope(box.dataset.scope).filter(tr => matchName(tr, q));
   options.innerHTML = '';
@@ -994,5 +1018,5 @@ tReady=true;renderT();
   try{var d=new Date();d.setFullYear(d.getFullYear()+1);document.cookie='umo_metrics_consent=1;path=/;max-age=31536000;SameSite=Lax'+(location.protocol==='https:'?';Secure':'');}catch(e){}
   try{window.dispatchEvent(new CustomEvent('umo:metrics-consent'));}catch(e){}
 });
-  document.getElementById('cookieMore').addEventListener('click',function(){openModal('Как сайт использует cookie и память браузера','<p>Сейчас сайт хранит в вашем браузере только ваши настройки: тему оформления, избранные видеокарты, заметку на листе и ориентацию таблицы. Эти данные остаются на вашем устройстве и никуда не передаются.</p><p>Удалить их можно в настройках браузера (очистка данных сайта). Если на сайте появятся сервисы статистики или другие cookie, этот текст будет дополнен.</p>','Понятно');});
+  document.getElementById('cookieMore').addEventListener('click',function(){openModal('Как сайт использует cookie и память браузера','<p>Сайт хранит в вашем браузере ваши настройки: тему оформления, избранные '+PAGE.nounPl+', заметку на листе и ориентацию таблицы. Эти данные остаются на вашем устройстве и никуда не передаются.</p><p>Также сайт использует аналитические cookie (метрики): после нажатия «Понятно» устанавливается файл согласия <b>umo_metrics_consent</b> (срок — 1 год), по которому системы статистики собирают анонимные данные о посещении страниц — без персональных данных и без передачи адреса электронной почты.</p><p>Удалить эти данные можно в настройках браузера (очистка данных сайта). Отказ от метрик: удалите cookie <b>umo_metrics_consent</b> — аналитические скрипты перестанут загружаться.</p>','Понятно');});
 })();
