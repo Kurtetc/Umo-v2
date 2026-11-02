@@ -4,7 +4,9 @@
 
 SET NAMES utf8mb4;
 
-CREATE TABLE IF NOT EXISTS cpus (
+-- Повторный импорт безопасен: старая таблица удаляется, дублей не будет.
+DROP TABLE IF EXISTS cpus;
+CREATE TABLE cpus (
   id INT AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
   brand VARCHAR(32) NOT NULL,
