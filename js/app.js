@@ -11,6 +11,8 @@ var PAGE = (window.PAGE_TYPE === 'cpu' || /cpu\.html/i.test(location.pathname)) 
   themeKey:'gpuCompareThemeV1', orientKeyLegacy:null, noun:'видеокарта', nounGen:'видеокарты', nounPl:'видеокарт', nounAccPl:'видеокарты',
   retroYear:2015, shareParam:'gpus', perfHeader:null
 };
+// Класс страницы для CSS (напр., расширенные квадраты марок только на cpu.html)
+document.body.classList.add('page-' + PAGE.kind);
 const viewport=document.getElementById('viewport'), table=document.getElementById('gpuTable');
 let activeFilter='all', hoverMode=true, raf=0;
 // Position-based scroll: cursor at the viewport's center = table's center;
@@ -48,9 +50,16 @@ const filterBoxes = [...document.querySelectorAll('.gpu-filter')];
 // через api/gpus.php. Резервных источников (JSON/CSV) больше нет.
 const tableBody = table.tBodies[0];
 let catalogRows = [];
-let catalogResolve, catalogReject; const catalogPromise = new Promise((res, rej) => { catalogResolve = res; catalogReject = rej; });
-const catalogReady = loadCatalog().then(() => catalogPromise);
-catalogReady.catch(e => { console.error('Не удалось загрузить каталог видеокарт', e); });
+let catalogResolve, catalogReject;
+// catalogReady — «ленивый» промис: запрос к API стартует не сразу при открытии страницы,
+// а когда страница видна (или через 250 мс). Первый переход между index.html и cpu.html заметно быстрее.
+const catalogReady = new Promise((res, rej) => { catalogResolve = res; catalogReject = rej; });
+let catalogStarted = false;
+function startCatalog(){ if(catalogStarted) return; catalogStarted = true; loadCatalog(); }
+if(document.visibilityState === 'visible') setTimeout(startCatalog, 250);
+else window.addEventListener('pageshow', startCatalog);
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') startCatalog(); }, {once:true});
+catalogReady.catch(e => { console.error('Не удалось загрузить каталог (' + PAGE.kind + ')', e); });
 async function loadCatalog() {
   let rows = null;
   try {
@@ -62,7 +71,7 @@ async function loadCatalog() {
     else throw new Error('Некорректный ответ от ' + PAGE.api);
   } catch(e) { catalogReject(e); return; }
   if (!rows.length) { catalogReject(new Error('Таблица ' + (PAGE.kind==='cpu'?'cpus':'gpus') + ' в базе данных пуста. Импортируйте соответствующий SQL из database/ через phpMyAdmin.')); return; }
-  if (PAGE.kind === 'cpu') buildCpuRows(rows); else buildRows(rows);
+  catalogResolve(rows);
 }
 function plural(n, forms) { // forms: [1, 2-4, 5+] ('видеокарта','карты','карт')
   n = Math.abs(n) % 100; const n1 = n % 10;
@@ -312,13 +321,15 @@ function buildCpuRows(rows){
     tr.dataset.brand=bkey; tr.dataset.year=year; tr.dataset.perf=String(perf);
     const mark=cpuShortMark(full,bkey);
     const typeIcon=typeKey?CPU_TYPE_ICONS[typeKey]:'—';
+    // Пустые ячейки помечаются классом is-empty: мини-шкала производительности под ними не рисуется.
+    const emptyCls=perf>0?'':' is-empty';
     tr.innerHTML='<td class="remove-cell"></td>'
-      + '<td><div class="gpu-name"><span class="gpu-mark '+bkey.toLowerCase()+'-mark">'+escapeHtml(mark)+'</span><span><span class="brand-name '+bkey.toLowerCase()+'">'+escapeHtml(full)+'</span><small>'+escapeHtml([bkey!=='OTHER'?bkey:'',arch].filter(Boolean).join(' · '))+'</small></span></div></td>'
+      + '<td class="cpu-name-cell'+emptyCls+'"><div class="gpu-name"><span class="gpu-mark '+bkey.toLowerCase()+'-mark">'+escapeHtml(mark)+'</span><span><span class="brand-name '+bkey.toLowerCase()+'">'+escapeHtml(full)+'</span><small>'+escapeHtml([bkey!=='OTHER'?bkey:'',arch].filter(Boolean).join(' · '))+'</small></span></div></td>'
       + '<td>'+escapeHtml(sockLith)+'</td>'
       + '<td class="cpu-type-cell" title="'+escapeHtml(typeName||'Тип не указан')+'">'+typeIcon+'</td>'
       + '<td>'+escapeHtml(cpuRelCell(item))+'</td>'
       + '<td>'+ct+'</td>'
-      + '<td>'+escapeHtml(cpuFreqCell(item['base_clock'],item['boost_clock']))+'</td>'
+      + '<td class="cpu-freq-cell">'+escapeHtml(cpuFreqCell(item['base_clock'],item['boost_clock']))+'</td>'
       + '<td>'+escapeHtml(cpuCacheCell(item['cache_l1'],item['cache_l2'],item['cache_l3']))+'</td>'
       + '<td>'+escapeHtml(power)+'</td>'
       + '<td>'+escapeHtml(memtype)+'</td>'
@@ -722,10 +733,12 @@ document.getElementById('sendDrawing').addEventListener('click',()=>{
   document.getElementById('drawingShareOthers').addEventListener('click',async()=>{const file=await exportDrawingFile();if(!file)return;try{if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file],title:'Заметка GPU Compare',text:'Моя заметка'});closeModal();return;}}catch(e){if(e.name==='AbortError')return;}const url=URL.createObjectURL(new Blob([await file.arrayBuffer()],{type:'image/png'}));const a=document.createElement('a');a.href=url;a.download=file.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);closeModal();openModal('Заметка сохранена','<p>Браузер не поддерживает прямую отправку файла — скачайте изображение и прикрепите его к нужному приложению.</p>','Понятно');});
 });
 document.querySelectorAll('.sidebar .navitem').forEach(item => item.addEventListener('click', () => {
-  document.querySelectorAll('.sidebar .navitem').forEach(n => n.classList.remove('active')); item.classList.add('active');
   const page = item.dataset.page;
+  // Переход между страницами видеокарт и процессоров — через загрузку новой страницы.
   if(page==='processors'){ location.href='cpu.html'; return; }
-  if(page==='compare'){closeModal();return;} if(page==='rate'){openRateModal();return;} if(pageInfo[page]) { openModal(pageInfo[page][0], pageInfo[page][1], 'Понятно'); if(page==='faq') document.querySelector('.site-modal')?.classList.add('faq-reading'); }
+  if(page==='compare'){ location.href='index.html'; return; }
+  document.querySelectorAll('.sidebar .navitem').forEach(n => n.classList.remove('active')); item.classList.add('active');
+  if(page==='rate'){openRateModal();return;} if(pageInfo[page]) { openModal(pageInfo[page][0], pageInfo[page][1], 'Понятно'); if(page==='faq') document.querySelector('.site-modal')?.classList.add('faq-reading'); }
 }));
 document.getElementById('shareComparison').addEventListener('click', async () => {
   const selected = [...table.tBodies[0].rows].filter(tr => tr.dataset.selected==='true').map(tr => gpuName(tr));
@@ -738,6 +751,8 @@ document.getElementById('siteFeedback').addEventListener('click', () => openModa
   const msg=document.getElementById('feedbackText')?.value||''; const email=document.getElementById('feedbackEmail')?.value||'';
   window.location.href='mailto:?subject='+encodeURIComponent('Отзыв о GPU Compare')+'&body='+encodeURIComponent(msg+(email?'\n\nEmail для ответа: '+email:'')); closeModal();
 }));
+// Данные из БД получены — строим строки таблицы.
+catalogReady.then(rows => { if (PAGE.kind === 'cpu') buildCpuRows(rows); else buildRows(rows); });
 // Restore selected cards from a shared URL (?gpus=... — выбор пользователя, не «все карты»).
 catalogReady.then(() => { try { const shared = new URL(window.location.href).searchParams.get(PAGE.shareParam); if(shared) { shared.split('|').forEach(n => { const tr=catalogRows.find(t => gpuName(t)===n); if(tr) addGpu(tr); }); } } catch(e) {} });
 
@@ -771,11 +786,13 @@ const fmtPct=v=>(v>=10?Math.round(v):v.toFixed(1).replace('.',','))+'%';
 catalogReady.then(()=>{ catalogRows.forEach(tr=>{
   tr.dataset.perf=tr.dataset.perf||GPU_PERF[gpuName(tr)]||0;
   const cell=tr.cells[1];
-  cell.insertAdjacentHTML('beforeend','<div class="mini-perf"><span class="mini-track"><i class="mini-fill"></i></span><b>0%</b></div>');
+  // На странице процессоров отдельного столбца «Производительность» нет — шкала не рисуется.
+  if(PAGE.kind!=='cpu') cell.insertAdjacentHTML('beforeend','<div class="mini-perf"><span class="mini-track"><i class="mini-fill"></i></span><b>0%</b></div>');
   cell.querySelector('.gpu-name').insertAdjacentHTML('afterbegin','<span class="row-grip" title="Потяните, чтобы изменить порядок" aria-hidden="true"></span>');
 }); updateCounts(); });
 // Шкала плавно вырастает/уменьшается (CSS transition), число меняется синхронно с ней.
 function setBar(fill,label,pct,instant){
+  if(!fill||!label) return; // на странице процессоров мини-шкал нет — пропускаем
   cancelAnimationFrame(label._r);
   const from=instant?0:(+label.dataset.v||0);
   label.dataset.v=pct; fill.style.width=pct+'%';
