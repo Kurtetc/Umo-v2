@@ -51,40 +51,73 @@ const filterBoxes = [...document.querySelectorAll('.gpu-filter')];
 const tableBody = table.tBodies[0];
 let catalogRows = [];
 let catalogResolve, catalogReject;
-// catalogReady — «ленивый» промис: запрос к API стартует не сразу при открытии страницы,
-// а когда страница видна (или через 250 мс). Первый переход между index.html и cpu.html заметно быстрее.
+// catalogReady — промис каталога: запрос к API стартует СРАЗУ при открытии страницы
+// (моментальная загрузка данных для списков поиска). При этом таблица остаётся ПУСТОЙ:
+// строки каталога скрыты, и в сравнение попадает только то, что пользователь выбрал сам.
 const catalogReady = new Promise((res, rej) => { catalogResolve = res; catalogReject = rej; });
-let catalogStarted = false;
-function startCatalog(){ if(catalogStarted) return; catalogStarted = true; loadCatalog(); }
-// «Ленивая» загрузка каталога из БД: запрос стартует в момент, когда пользователь реально
-// собирается выбирать устройства — открыл список фильтров, печатает в поле поиска или нажал
-// стрелку «показать список». Плюс страховка: автозапуск через 1,5 с, если страница видна
-// (например, пользователь восстановил сравнение по ссылке «поделиться»).
-// До загрузки каталога поля поиска и стрелки показывают текст-заглушку вместо пустого списка.
-const CATALOG_PENDING_MSG = 'Загружаем данные…';
-function ensureCatalogSoon(){ startCatalog(); }
-filterBoxes.forEach(box => {
-  const inp = box.querySelector('input');
-  ['focus','pointerdown'].forEach(ev => inp && inp.addEventListener(ev, ensureCatalogSoon));
-  box.querySelector('.filter-arrow')?.addEventListener('pointerdown', ensureCatalogSoon);
-});
-if(document.visibilityState === 'visible') setTimeout(startCatalog, 1500);
-else window.addEventListener('pageshow', startCatalog);
-document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') startCatalog(); }, {once:true});
 catalogReady.catch(e => { console.error('Не удалось загрузить каталог (' + PAGE.kind + ')', e); });
+// Заглушка в списках фильтров, пока данные из БД ещё не пришли.
+const CATALOG_PENDING_MSG = 'Загружаем данные…';
+// Кэш каталога в sessionStorage + localStorage: при повторном заходе на страницу,
+// при переходе index.html <-> cpu.html и после F5 данные берутся из памяти МГНОВЕННО,
+// без ожидания ответа базы. Параллельно идёт фоновое обновление из БД.
+const CATALOG_CACHE_KEY = 'umoCatalogCacheV2_' + PAGE.kind;
+const CATALOG_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 часов
+function readCatalogCache(){
+  const stores = [sessionStorage, localStorage];
+  for (const st of stores) {
+    try {
+      if (!st) continue;
+      const raw = st.getItem(CATALOG_CACHE_KEY); if (!raw) continue;
+      const o = JSON.parse(raw);
+      if (!o || !Array.isArray(o.rows) || !o.rows.length) continue;
+      if (Date.now() - (+o.t || 0) > CATALOG_CACHE_TTL) continue;
+      return o.rows;
+    } catch(e){}
+  }
+  return null;
+}
+function writeCatalogCache(rows){
+  const payload = JSON.stringify({t: Date.now(), rows});
+  try { sessionStorage.setItem(CATALOG_CACHE_KEY, payload); } catch(e){}
+  try { localStorage.setItem(CATALOG_CACHE_KEY, payload); } catch(e){
+    // Не хватило квоты браузера — чистим старый кэш этого типа и пробуем ещё раз.
+    try { localStorage.removeItem(CATALOG_CACHE_KEY); localStorage.setItem(CATALOG_CACHE_KEY, payload); } catch(e2){}
+  }
+}
+let catalogResolvedOnce = false;
+function resolveCatalog(rows){
+  if (catalogResolvedOnce) return;
+  catalogResolvedOnce = true;
+  catalogResolve(rows);
+}
 async function loadCatalog() {
+  const cached = readCatalogCache();
+  if (cached) {
+    // Мгновенная отдача из памяти браузера — без обращения к БД (страница открывается сразу).
+    resolveCatalog(cached);
+  }
   let rows = null;
   try {
-    const r = await fetch(PAGE.api, {cache:'no-store'});
+    const r = await fetch(PAGE.api, {cache: cached ? 'default' : 'no-store'});
     if (!r.ok) throw new Error(PAGE.api + ' недоступен: HTTP ' + r.status + '. Проверьте, что сайт запущен через PHP (OpenServer/Beget) и база данных импортирована.');
     const j = await r.json();
     if (Array.isArray(j)) rows = j;
     else if (j && j.error) throw new Error('Ошибка БД: ' + j.error + ' — ' + (j.detail || ''));
     else throw new Error('Некорректный ответ от ' + PAGE.api);
-  } catch(e) { catalogReject(e); return; }
-  if (!rows.length) { catalogReject(new Error('Таблица ' + (PAGE.kind==='cpu'?'cpus':'gpus') + ' в базе данных пуста. Импортируйте соответствующий SQL из database/ через phpMyAdmin.')); return; }
-  catalogResolve(rows);
+  } catch(e) {
+    // Если из кэша данные уже отданы — фоновая ошибка не критична, тихо игнорируем.
+    if (!catalogResolvedOnce) catalogReject(e);
+    return;
+  }
+  if (!rows.length) {
+    if (!catalogResolvedOnce) catalogReject(new Error('Таблица ' + (PAGE.kind==='cpu'?'cpus':'gpus') + ' в базе данных пуста. Импортируйте соответствующий SQL из database/ через phpMyAdmin.'));
+    return;
+  }
+  writeCatalogCache(rows);
+  resolveCatalog(rows);
 }
+loadCatalog(); // старт запроса немедленно при открытии страницы
 function plural(n, forms) { // forms: [1, 2-4, 5+] ('видеокарта','карты','карт')
   n = Math.abs(n) % 100; const n1 = n % 10;
   if (n > 10 && n < 20) return forms[2];
@@ -177,11 +210,13 @@ function buildRows(rows) {
     const cores = numOf(item['cores']), rop = numOf(item['Rasterization blocks']), tmu = numOf(item['Texture blocks']);
     const shaders = (cores!==null&&rop!==null&&tmu!==null) ? fmtInt(cores)+' / '+fmtInt(rop)+' / '+fmtInt(tmu) : '—';
     const rates = (numOf(item['pixelRate'])!==null||numOf(item['textureRate'])!==null) ? decC(item['pixelRate'])+' / '+decC(item['textureRate']) : '—';
+    // Колонка «Тип памяти / объём / шина»: тип, объём и разрядность шины.
     const mem = ramCell(item['ram'], item['ram_type'], year);
-    const mf = numOf(item['Memory frequency']);
-    const memFull = mem + ' / ' + (mf!==null ? fmtInt(mf)+' МГц' : '—');
-    const bw = numOf(item['bus_width']); const band = numOf(item['ram_bandwidth']);
-    const bus = (bw!==null?fmtInt(bw)+' бит':'—') + ' / ' + (band!==null?decC(item['ram_bandwidth'])+' ГБ/с':'—');
+    const bw = numOf(item['bus_width']);
+    const memFull = mem + ' / ' + (bw!==null ? fmtInt(bw)+' бит' : '—');
+    // Колонка «Частота / пропускная способность»: частота памяти и bandwidth.
+    const mf = numOf(item['Memory frequency']); const band = numOf(item['ram_bandwidth']);
+    const bus = (mf!==null ? fmtInt(mf)+' МГц' : '—') + ' / ' + (band!==null?decC(item['ram_bandwidth'])+' ГБ/с':'—');
     const tdpv = numOf(item['tdp']), psuv = numOf(item['suggested_psu']);
     const power = (tdpv!==null?fmtInt(tdpv)+' Вт':'—') + ' / ' + (psuv!==null?fmtInt(psuv)+' Вт':'—');
     const tc = numOf(item['tensor_cores']), rc = numOf(item['rt_cores']);
@@ -219,8 +254,9 @@ function buildRows(rows) {
   // добавлении/удалении карт из сравнения).
   updateTensorColumn();
   catalogRows = [...tableBody.querySelectorAll('tr')];
+  hideUnselectedRows(); // страховка: каталог существует, но в таблице не видно ни одной строки
   applyHitsToRows();
-  catalogResolve();
+  decorateRowCells(catalogRows);
 }
 // ---- построение строк таблицы процессоров (данные из таблицы cpus / api/cpus.php) ----
 const CPU_MON=['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
@@ -352,8 +388,31 @@ function buildCpuRows(rows){
   });
   tableBody.appendChild(frag);
   catalogRows=[...tableBody.querySelectorAll('tr')];
+  hideUnselectedRows(); // страховка: каталог существует, но в таблице не видно ни одной строки
   applyHitsToRows();
-  catalogResolve();
+  decorateRowCells(catalogRows);
+}
+// Мини-шкала производительности + ручка перетаскивания в ячейке названия.
+function decorateRowCells(rows){
+  if (PAGE.kind !== 'gpu') return; // на cpu.html колонка «Производительность» добавляется отдельным блоком ниже
+  rows.forEach(tr => {
+    const cell = tr.cells[1];
+    if (!cell || cell.querySelector('.mini-perf')) return;
+    cell.insertAdjacentHTML('beforeend','<div class="mini-perf"><span class="mini-track"><i class="mini-fill"></i></span><b>0%</b></div>');
+    const nameEl = cell.querySelector('.gpu-name');
+    if (nameEl && !nameEl.querySelector('.row-grip')) nameEl.insertAdjacentHTML('afterbegin','<span class="row-grip" title="Потяните, чтобы изменить порядок" aria-hidden="true"></span>');
+  });
+}
+// Главное правило таблиц (обе страницы): В ТАБЛИЦЕ НЕТ НИ ОДНОЙ СТРОКИ, пока пользователь
+// сам не выбрал модель для сравнения. Строки каталога существуют в DOM (для поиска/фильтров),
+// но скрыты; видимыми становятся только добавленные через addGpu (или восстановленные из
+// ссылки «поделиться»).
+function hideUnselectedRows(){
+  catalogRows.forEach(tr => {
+    if (tr.dataset.selected !== 'true') { tr.dataset.selected = 'false'; tr.style.display = 'none'; }
+    tr.dataset.favorite = favoriteNames.has(gpuName(tr)) ? 'true' : 'false';
+    renderRemoveCell(tr);
+  });
 }
 function decC(s){ const n = numOf(s); if (n===null) return '—'; return (Math.round(n*10)/10).toString().replace('.', ','); }
 function escapeHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
@@ -588,15 +647,7 @@ if (PAGE.kind === 'cpu') {
   const thFreq=[...table.tHead.rows[0].cells].find(th=>/^частота$/i.test(th.textContent.trim()));
   if (thFreq) thFreq.innerHTML='Частота<small style="display:block;font-weight:400;font-size:.72em;opacity:.75">база - буст</small>';
 }
-catalogReady.then(() => {
-  catalogRows.forEach(tr => {
-    tr.dataset.selected = 'false';
-    tr.style.display = 'none';
-    const name = gpuName(tr);
-    tr.dataset.favorite = favoriteNames.has(name) ? 'true' : 'false';
-    renderRemoveCell(tr);
-  });
-});
+catalogReady.then(() => { hideUnselectedRows(); updateCounts(); });
 // Modal helpers: these are front-end placeholders until an account/contact backend is connected.
 const modalBackdrop = document.getElementById('modalBackdrop'), modalTitle = document.getElementById('modalTitle'), modalBody = document.getElementById('modalBody'), modalSubmit = document.getElementById('modalSubmit');
 let modalAction = null;
@@ -809,11 +860,6 @@ const perfList=document.getElementById('perfList'), perfEmpty=document.getElemen
 const fmtPct=v=>(v>=10?Math.round(v):v.toFixed(1).replace('.',','))+'%';
 catalogReady.then(()=>{ catalogRows.forEach(tr=>{
   tr.dataset.perf=tr.dataset.perf||GPU_PERF[gpuName(tr)]||0;
-  const cell=tr.cells[1];
-  // Мини-шкала производительности возвращается как раньше: создаётся на обеих страницах (видеокарты и процессоры).
-  // На странице процессоров строки без perf>0 помечены классом is-empty — там шкала скрыта через CSS.
-  cell.insertAdjacentHTML('beforeend','<div class="mini-perf"><span class="mini-track"><i class="mini-fill"></i></span><b>0%</b></div>');
-  cell.querySelector('.gpu-name').insertAdjacentHTML('afterbegin','<span class="row-grip" title="Потяните, чтобы изменить порядок" aria-hidden="true"></span>');
 }); updateCounts(); });
 // Шкала плавно вырастает/уменьшается (CSS transition), число меняется синхронно с ней.
 function setBar(fill,label,pct,instant){
