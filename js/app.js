@@ -1,13 +1,13 @@
 // ==== Конфигурация страницы: один app.js работает и для видеокарт (index.html), и для процессоров (cpu.html).
 // На страницах задан window.PAGE_TYPE ('gpu' или 'cpu'); если не задан — определяем по имени файла.
 var PAGE = (window.PAGE_TYPE === 'cpu' || /cpu\.html/i.test(location.pathname)) ? {
-  kind:'cpu', type:'cpu', namesApi:'api/names.php?type=cpu', detailApi:'api/details.php?type=cpu', legacyApi:'api/cpus.php',
+  kind:'cpu', type:'cpu', catalogApi:'api/catalog.php?type=cpu', namesApi:'api/names.php?type=cpu', detailApi:'api/details.php?type=cpu', legacyApi:'api/cpus.php',
   hitApi:'api/cpu_hit.php', hitsKey:'cpuCompareHitsV1',
   favKey:'cpuCompareFavoritesV1', drawKey:'cpuCompareDrawingNoteV1', orientKey:'cpuCompareOrientV1',
   themeKey:'cpuCompareThemeV1', orientKeyLegacy:'gpuCompareOrientV1', noun:'процессор', nounGen:'процессора', nounPl:'процессоров', nounAccPl:'процессоры',
   retroYear:2010, shareParam:'cpus', perfHeader:null
 } : {
-  kind:'gpu', type:'gpu', namesApi:'api/names.php?type=gpu', detailApi:'api/details.php?type=gpu', legacyApi:'api/gpus.php',
+  kind:'gpu', type:'gpu', catalogApi:'api/catalog.php?type=gpu', namesApi:'api/names.php?type=gpu', detailApi:'api/details.php?type=gpu', legacyApi:'api/gpus.php',
   hitApi:'api/hit.php', hitsKey:'gpuCompareHitsV1',
   favKey:'gpuCompareFavoritesV1', drawKey:'gpuCompareDrawingNoteV1', orientKey:'gpuCompareOrientV1',
   themeKey:'gpuCompareThemeV1', orientKeyLegacy:null, noun:'видеокарта', nounGen:'видеокарты', nounPl:'видеокарт', nounAccPl:'видеокарты',
@@ -60,10 +60,13 @@ const catalogReady = new Promise((res, rej) => { catalogResolve = res; catalogRe
 catalogReady.catch(e => { console.error('Не удалось загрузить каталог (' + PAGE.kind + ')', e); });
 // Заглушка в списках фильтров, пока данные из БД ещё не пришли.
 const CATALOG_PENDING_MSG = 'Загружаем данные…';
-// v1.1: кэш СПИСКА НАЗВАНИЙ (лёгкий ответ api/names.php — десятки килобайт вместо десятков мегабайт).
-// Страница открывается мгновенно: список берётся из памяти браузера, полная карточка подтягивается по клику.
-const NAMES_CACHE_KEY = 'umoCatalogNamesV3_' + PAGE.kind;
-const NAMES_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 часов
+// v1.2: кэш ЛЁГКОГО КАТАЛОГА (api/catalog.php: название + год + производительность).
+// Страница открывается мгновенно даже при медленной БД: список берётся из памяти браузера,
+// а в фоне тихо проверяется актуальный ответ сервера. Копия живёт 30 дней; если ей больше —
+// до ответа сервера показываем заглушку «Загружаем данные…».
+// Полная карточка характеристик подтягивается по одному запросу только при выборе модели.
+const NAMES_CACHE_KEY = 'umoCatalogNamesV4_' + PAGE.kind;
+const NAMES_CACHE_TTL = 30 * 24 * 60 * 60 * 1000; // 30 дней — максимальный возраст копии
 function readNamesCache(){
   for (const st of [sessionStorage, localStorage]) {
     try {
@@ -90,27 +93,34 @@ function resolveCatalog(names){
   catalogResolvedOnce = true;
   catalogResolve(names);
 }
+async function fetchCatalog(){
+  const r = await fetch(PAGE.catalogApi, {cache: 'default'});
+  if (!r.ok) throw new Error(PAGE.catalogApi + ' недоступен: HTTP ' + r.status + '. Проверьте, что сайт запущен через PHP (OpenServer/Beget) и база данных импортирована.');
+  const j = await r.json();
+  if (Array.isArray(j)) return j;
+  if (j && j.error) throw new Error('Ошибка БД: ' + j.error + ' — ' + (j.detail || ''));
+  throw new Error('Некорректный ответ от ' + PAGE.catalogApi);
+}
 async function loadCatalog() {
   const cached = readNamesCache();
-  if (cached) resolveCatalog(cached); // мгновенная отдача из памяти браузера
+  if (cached) resolveCatalog(cached); // мгновенная отдача из памяти браузера (даже если БД тормозит)
   let names = null;
   try {
-    const r = await fetch(PAGE.namesApi, {cache: cached ? 'default' : 'no-store'});
-    if (!r.ok) throw new Error(PAGE.namesApi + ' недоступен: HTTP ' + r.status + '. Проверьте, что сайт запущен через PHP (OpenServer/Beget) и база данных импортирована.');
-    const j = await r.json();
-    if (Array.isArray(j)) names = j;
-    else if (j && j.error) throw new Error('Ошибка БД: ' + j.error + ' — ' + (j.detail || ''));
-    else throw new Error('Некорректный ответ от ' + PAGE.namesApi);
+    names = await fetchCatalog();
   } catch(e) {
-    if (!catalogResolvedOnce) catalogReject(e);
+    if (!catalogResolvedOnce) catalogReject(e); // кэша нет и сервер недоступен — показываем ошибку
     return;
   }
   if (!names.length) {
     if (!catalogResolvedOnce) catalogReject(new Error('Таблица ' + (PAGE.kind==='cpu'?'cpus':'gpus') + ' в базе данных пуста. Импортируйте соответствующий SQL из database/ через phpMyAdmin.'));
     return;
   }
+  const hadFreshCache = !!cached;
   writeNamesCache(names);
   resolveCatalog(names);
+  // Кэш был, но устарел по содержимому (изменилась БД) — перечень уже построен,
+  // перезагружаем страницу один раз, чтобы показать актуальные списки.
+  if (hadFreshCache && JSON.stringify(cached) !== JSON.stringify(names)) location.reload();
 }
 loadCatalog(); // старт запроса немедленно при открытии страницы
 function plural(n, forms) { // forms: [1, 2-4, 5+] ('видеокарта','карты','карт')
@@ -508,15 +518,38 @@ function renderRemoveCell(tr) {
 }
 
 // Кэш полных карточек (по названию): повторный выбор той же модели — мгновенный, без БД.
+// Карточки переживают перезагрузку страницы: лежат в localStorage (сжатые) до 30 дней,
+// поэтому «избранное» и восстановление по ссылке ?gpus=... открываются без запросов к MySQL.
+const DETAIL_STORE_KEY = 'umoDetailsV1_' + PAGE.kind;
+const DETAIL_STORE_TTL = 30 * 24 * 60 * 60 * 1000; // 30 дней
+let detailStore = null;
+function loadDetailStore(){
+  if (detailStore) return detailStore;
+  try {
+    const o = JSON.parse(localStorage.getItem(DETAIL_STORE_KEY) || '{}');
+    detailStore = (o && typeof o === 'object' && Date.now() - (+o.t || 0) <= DETAIL_STORE_TTL) ? o.d : {};
+  } catch(e){ detailStore = {}; }
+  return detailStore;
+}
+let detailSaveTimer = 0;
+function saveDetailStore(){
+  clearTimeout(detailSaveTimer);
+  detailSaveTimer = setTimeout(() => {
+    try { localStorage.setItem(DETAIL_STORE_KEY, JSON.stringify({t: Date.now(), d: detailStore})); }
+    catch(e){ try { localStorage.removeItem(DETAIL_STORE_KEY); } catch(e2){} }
+  }, 500);
+}
 const detailCache = new Map();
 async function fetchDetails(name){
   if (detailCache.has(name)) return detailCache.get(name);
+  const store = loadDetailStore();
+  if (store[name]) { detailCache.set(name, store[name]); return store[name]; }
   try {
     const r = await fetch(PAGE.detailApi + '&name=' + encodeURIComponent(name));
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const j = await r.json();
     const item = Array.isArray(j) ? j.find(x => cpuCleanName(String(x['name']||'').trim()) === name || String(x['name']||'').trim() === name) || j[0] : j;
-    if (item) detailCache.set(name, item);
+    if (item) { detailCache.set(name, item); store[name] = item; saveDetailStore(); }
     return item || null;
   } catch(e) { console.error('Не удалось получить характеристики «' + name + '»', e); return null; }
 }
@@ -524,10 +557,15 @@ async function fetchDetails(name){
 async function hydrateRow(tr){
   if (tr.dataset.loaded === 'true') return tr;
   const name = gpuName(tr);
+  // Год и производительность уже известны из лёгкого каталога — переносим на полную строку
+  // (шкалы рисуются мгновенно, не дожидаясь данных карточки).
+  const py = tr.dataset.year || '', pp = tr.dataset.perf || '0';
   const item = await fetchDetails(name);
   if (!item) return tr; // не удалось подтянуть — оставляем строку с прочерками
   const full = PAGE.kind === 'cpu' ? makeCpuTr(item) : makeGpuTr(item);
   if (!full) return tr;
+  if ((!full.dataset.year || full.dataset.year === '') && py) full.dataset.year = py;
+  if ((+full.dataset.perf === 0) && +pp > 0) full.dataset.perf = pp;
   full.dataset.selected = 'true';
   full.style.display = '';
   full.dataset.favorite = favoriteNames.has(gpuName(full)) ? 'true' : 'false';
@@ -902,16 +940,20 @@ document.getElementById('siteFeedback').addEventListener('click', () => openModa
 }));
 // Данные из БД получены — строим строки таблицы.
 catalogReady.then(names => {
-  // v1.1: строим ЛЁГКИЕ строки (только название + бренд). Полные характеристики
-  // подтянутся из api/details.php в момент, когда модель добавят в сравнение.
+  // v1.2: строим ЛЁГКИЕ строки (название + бренд + год релиза + производительность — всё
+  // из компактного ответа api/catalog.php). Полные характеристики подтянутся из
+  // api/details.php в момент, когда модель добавят в сравнение (один маленький запрос).
   const seen = new Set();
   const trs = [];
   names.forEach(o => {
-    const n = String((o && o.name) || '').trim();
+    const n = String((o && (o.n || o.name)) || '').trim();
     if (!n || seen.has(n)) return;
     seen.add(n);
-    trs.push(PAGE.kind === 'cpu' ? lightCpuTr(n) : lightGpuTr(n));
-    if (o && o.id != null) trs[trs.length-1].dataset.id = String(o.id);
+    const tr = PAGE.kind === 'cpu' ? lightCpuTr(n) : lightGpuTr(n);
+    if (o.y) tr.dataset.year = String(o.y);            // нужен для фильтра «Ретро»
+    if (o.p != null && o.p !== '') tr.dataset.perf = String(+o.p || 0); // шкалы производительности
+    if (o.id != null) tr.dataset.id = String(o.id);
+    trs.push(tr);
   });
   if (PAGE.kind === 'cpu') buildCpuRows(trs); else buildRows(trs);
 });
