@@ -1,1 +1,4 @@
 node_modules/
+
+# серверный кэш лёгкого каталога (создаётся api/catalog.php на хостинге)
+api/cache/

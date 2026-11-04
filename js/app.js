@@ -1,13 +1,13 @@
 // ==== Конфигурация страницы: один app.js работает и для видеокарт (index.html), и для процессоров (cpu.html).
 // На страницах задан window.PAGE_TYPE ('gpu' или 'cpu'); если не задан — определяем по имени файла.
 var PAGE = (window.PAGE_TYPE === 'cpu' || /cpu\.html/i.test(location.pathname)) ? {
-  kind:'cpu', type:'cpu', catalogApi:'api/catalog.php?type=cpu', namesApi:'api/names.php?type=cpu', detailApi:'api/details.php?type=cpu', legacyApi:'api/cpus.php',
+  kind:'cpu', type:'cpu', catalogApi:'api/catalog.php?type=cpu', namesApi:'api/names.php?type=cpu', detailApi:'api/details.php?type=cpu&id=', legacyApi:'api/cpus.php',
   hitApi:'api/cpu_hit.php', hitsKey:'cpuCompareHitsV1',
   favKey:'cpuCompareFavoritesV1', drawKey:'cpuCompareDrawingNoteV1', orientKey:'cpuCompareOrientV1',
   themeKey:'cpuCompareThemeV1', orientKeyLegacy:'gpuCompareOrientV1', noun:'процессор', nounGen:'процессора', nounPl:'процессоров', nounAccPl:'процессоры',
   retroYear:2010, shareParam:'cpus', perfHeader:null
 } : {
-  kind:'gpu', type:'gpu', catalogApi:'api/catalog.php?type=gpu', namesApi:'api/names.php?type=gpu', detailApi:'api/details.php?type=gpu', legacyApi:'api/gpus.php',
+  kind:'gpu', type:'gpu', catalogApi:'api/catalog.php?type=gpu', namesApi:'api/names.php?type=gpu', detailApi:'api/details.php?type=gpu&id=', legacyApi:'api/gpus.php',
   hitApi:'api/hit.php', hitsKey:'gpuCompareHitsV1',
   favKey:'gpuCompareFavoritesV1', drawKey:'gpuCompareDrawingNoteV1', orientKey:'gpuCompareOrientV1',
   themeKey:'gpuCompareThemeV1', orientKeyLegacy:null, noun:'видеокарта', nounGen:'видеокарты', nounPl:'видеокарт', nounAccPl:'видеокарты',
@@ -60,13 +60,14 @@ const catalogReady = new Promise((res, rej) => { catalogResolve = res; catalogRe
 catalogReady.catch(e => { console.error('Не удалось загрузить каталог (' + PAGE.kind + ')', e); });
 // Заглушка в списках фильтров, пока данные из БД ещё не пришли.
 const CATALOG_PENDING_MSG = 'Загружаем данные…';
-// v1.2: кэш ЛЁГКОГО КАТАЛОГА (api/catalog.php: название + год + производительность).
+// v1.3: кэш ЛЁГКОГО КАТАЛОГА (api/catalog.php: id + название + бренд + год + производительность).
 // Страница открывается мгновенно даже при медленной БД: список берётся из памяти браузера,
-// а в фоне тихо проверяется актуальный ответ сервера. Копия живёт 30 дней; если ей больше —
-// до ответа сервера показываем заглушку «Загружаем данные…».
-// Полная карточка характеристик подтягивается по одному запросу только при выборе модели.
-const NAMES_CACHE_KEY = 'umoCatalogNamesV4_' + PAGE.kind;
+// а в фоне тихо проверяется актуальный ответ сервера (с ETag — сервер может ответить 304 без чтения БД).
+// Копия живёт 30 дней; если ей больше — до ответа сервера показываем заглушку «Загружаем данные…».
+// Полная карточка характеристик подтягивается по ОДНОМУ индексируемому запросу (id) при выборе модели.
+const NAMES_CACHE_KEY = 'umoCatalogNamesV5_' + PAGE.kind; // V5: новый компактный формат строк-массивов
 const NAMES_CACHE_TTL = 30 * 24 * 60 * 60 * 1000; // 30 дней — максимальный возраст копии
+const ETAG_CACHE_KEY  = 'umoCatalogEtagV5_' + PAGE.kind;
 function readNamesCache(){
   for (const st of [sessionStorage, localStorage]) {
     try {
@@ -94,12 +95,26 @@ function resolveCatalog(names){
   catalogResolve(names);
 }
 async function fetchCatalog(){
-  const r = await fetch(PAGE.catalogApi, {cache: 'default'});
+  let etag = '';
+  try { etag = localStorage.getItem(ETAG_CACHE_KEY) || ''; } catch(e){}
+  const headers = etag ? {'If-None-Match': etag} : undefined;
+  const r = await fetch(PAGE.catalogApi, {cache: 'default', headers});
+  if (r.status === 304) return null; // сервер сказал «не изменилось» — используем то, что уже отдали из кэша
   if (!r.ok) throw new Error(PAGE.catalogApi + ' недоступен: HTTP ' + r.status + '. Проверьте, что сайт запущен через PHP (OpenServer/Beget) и база данных импортирована.');
   const j = await r.json();
-  if (Array.isArray(j)) return j;
   if (j && j.error) throw new Error('Ошибка БД: ' + j.error + ' — ' + (j.detail || ''));
-  throw new Error('Некорректный ответ от ' + PAGE.catalogApi);
+  let rows;
+  if (j && Array.isArray(j.b)) {
+    rows = j.b; // компактный формат v1.3: [[id,name,brand,year,perf], ...]
+    const ne = j.v || '';
+    if (ne) try { localStorage.setItem(ETAG_CACHE_KEY, ne); } catch(e){}
+  } else if (Array.isArray(j)) {
+    // обратная совместимость со старым форматом [{n,y,p}, ...]
+    rows = j.map(o => ['', o.n || o.name || '', '', o.y || '', o.p != null ? String(o.p) : '']);
+  } else {
+    throw new Error('Некорректный ответ от ' + PAGE.catalogApi);
+  }
+  return rows;
 }
 async function loadCatalog() {
   const cached = readNamesCache();
@@ -111,6 +126,7 @@ async function loadCatalog() {
     if (!catalogResolvedOnce) catalogReject(e); // кэша нет и сервер недоступен — показываем ошибку
     return;
   }
+  if (names === null) return; // 304 Not Modified — кэш актуален, ничего не делаем
   if (!names.length) {
     if (!catalogResolvedOnce) catalogReject(new Error('Таблица ' + (PAGE.kind==='cpu'?'cpus':'gpus') + ' в базе данных пуста. Импортируйте соответствующий SQL из database/ через phpMyAdmin.'));
     return;
@@ -252,10 +268,12 @@ function makeGpuTr(item) {
     return tr;
 }
 // v1.1: каталог состоит из ЛЁГКИХ строк (только название), полная строка строится при выборе.
-function lightGpuTr(name){
+function lightGpuTr(name, brand){
   const tr=document.createElement('tr');
   const braw=name.toUpperCase();
-  const bkey=braw.includes('NVD')||braw.includes('GEFORCE')?'NVIDIA':braw.includes('RADEON')||braw.startsWith('AMD')?'AMD':braw.includes('ARC')||braw.includes('IRIS')||braw.includes('UHD')||braw.startsWith('INTEL')?'INTEL':'OTHER';
+  // Бренд берём из БД (колонка vendor); если его нет — определяем по названию.
+  const bkey=(brand && ['NVIDIA','AMD','INTEL'].includes(String(brand).toUpperCase())) ? String(brand).toUpperCase()
+    : (braw.includes('NVD')||braw.includes('GEFORCE')?'NVIDIA':braw.includes('RADEON')||braw.startsWith('AMD')?'AMD':braw.includes('ARC')||braw.includes('IRIS')||braw.includes('UHD')||braw.startsWith('INTEL')?'INTEL':'OTHER');
   tr.dataset.brand=bkey; tr.dataset.year=''; tr.dataset.perf='0'; tr.dataset.loaded='false';
   const mark=shortMark(name);
   tr.innerHTML='<td class="remove-cell"></td>'
@@ -407,10 +425,11 @@ function makeCpuTr(item){
     return tr;
 }
 // v1.1: ЛЁГКАЯ строка каталога — только название (для мгновенной загрузки страницы).
-function lightCpuTr(name){
+function lightCpuTr(name, brand){
   const tr=document.createElement('tr');
   const braw=name.toUpperCase();
-  const bkey=braw.includes('AMD')?'AMD':braw.includes('INTEL')||/^CORE |^PENTIUM|^CELE|XEON/.test(braw)?'INTEL':'OTHER';
+  // Бренд берём из БД (колонка brand: 'AMD'/'INTEL'); если его нет — определяем по названию.
+  const bkey=(brand && ['AMD','INTEL'].includes(String(brand).toUpperCase())) ? String(brand).toUpperCase() : braw.includes('AMD')?'AMD':braw.includes('INTEL')||/^CORE |^PENTIUM|^CELE|XEON/.test(braw)?'INTEL':'OTHER';
   tr.dataset.brand=bkey; tr.dataset.year=''; tr.dataset.perf='0'; tr.dataset.loaded='false';
   const mark=cpuShortMark(name,bkey);
   tr.innerHTML='<td class="remove-cell"></td>'
@@ -540,12 +559,16 @@ function saveDetailStore(){
   }, 500);
 }
 const detailCache = new Map();
-async function fetchDetails(name){
+async function fetchDetails(name, id){
   if (detailCache.has(name)) return detailCache.get(name);
   const store = loadDetailStore();
   if (store[name]) { detailCache.set(name, store[name]); return store[name]; }
   try {
-    const r = await fetch(PAGE.detailApi + '&name=' + encodeURIComponent(name));
+    // v1.3: сначала быстрый запрос по id (индекс PRIMARY), только если id нет — по имени.
+    const url = (id !== undefined && id !== null && id !== '')
+      ? PAGE.detailApi + encodeURIComponent(id)
+      : 'api/details.php?type=' + PAGE.type + '&name=' + encodeURIComponent(name);
+    const r = await fetch(url);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const j = await r.json();
     const item = Array.isArray(j) ? j.find(x => cpuCleanName(String(x['name']||'').trim()) === name || String(x['name']||'').trim() === name) || j[0] : j;
@@ -560,7 +583,7 @@ async function hydrateRow(tr){
   // Год и производительность уже известны из лёгкого каталога — переносим на полную строку
   // (шкалы рисуются мгновенно, не дожидаясь данных карточки).
   const py = tr.dataset.year || '', pp = tr.dataset.perf || '0';
-  const item = await fetchDetails(name);
+  const item = await fetchDetails(name, tr.dataset.id);
   if (!item) return tr; // не удалось подтянуть — оставляем строку с прочерками
   const full = PAGE.kind === 'cpu' ? makeCpuTr(item) : makeGpuTr(item);
   if (!full) return tr;
@@ -940,19 +963,21 @@ document.getElementById('siteFeedback').addEventListener('click', () => openModa
 }));
 // Данные из БД получены — строим строки таблицы.
 catalogReady.then(names => {
-  // v1.2: строим ЛЁГКИЕ строки (название + бренд + год релиза + производительность — всё
-  // из компактного ответа api/catalog.php). Полные характеристики подтянутся из
-  // api/details.php в момент, когда модель добавят в сравнение (один маленький запрос).
+  // v1.3: строим ЛЁГКИЕ строки (id + название + бренд + год + производительность — всё
+  // из компактного ответа api/catalog.php). Полные характеристики подтягиваются из
+  // api/details.php?id=... в момент, когда модель добавят в сравнение (один индексированный запрос).
   const seen = new Set();
   const trs = [];
   names.forEach(o => {
-    const n = String((o && (o.n || o.name)) || '').trim();
+    let id = '', n = '', brand = '', y = '', p = '';
+    if (Array.isArray(o)) { id = o[0]; n = String(o[1] || '').trim(); brand = String(o[2] || ''); y = o[3]; p = o[4]; }
+    else { n = String((o && (o.n || o.name)) || '').trim(); brand = o.brand || ''; y = o.y; p = o.p; id = o.id != null ? o.id : ''; }
     if (!n || seen.has(n)) return;
     seen.add(n);
-    const tr = PAGE.kind === 'cpu' ? lightCpuTr(n) : lightGpuTr(n);
-    if (o.y) tr.dataset.year = String(o.y);            // нужен для фильтра «Ретро»
-    if (o.p != null && o.p !== '') tr.dataset.perf = String(+o.p || 0); // шкалы производительности
-    if (o.id != null) tr.dataset.id = String(o.id);
+    const tr = PAGE.kind === 'cpu' ? lightCpuTr(n, brand) : lightGpuTr(n, brand);
+    if (y) tr.dataset.year = String(y);            // нужен для фильтра «Ретро»
+    if (p != null && p !== '') tr.dataset.perf = String(+p || 0); // шкалы производительности
+    if (id !== '' && id != null) tr.dataset.id = String(id);
     trs.push(tr);
   });
   if (PAGE.kind === 'cpu') buildCpuRows(trs); else buildRows(trs);
